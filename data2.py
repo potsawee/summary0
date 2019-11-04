@@ -73,9 +73,8 @@ class CNNDMloader(object):
 
             processed_documents[idx] = ProcessedDocument(encoded_article, attention_mask, token_type_ids, cls_pos)
 
-        pdb.set_trace()
-        # with open("test31oct.dat.pk.bin", "wb") as f:
-        #     f.dump(processed_documents, f)
+        with open("test31oct.dat.pk.bin", "wb") as f:
+            pickle.dump(processed_documents, f)
 
 
 def load_data_pickle(path):
@@ -90,6 +89,41 @@ def load_data_pickle(path):
 
     return documents
 
+def load_extractive_labels(data_type, max_num_sentences):
+	if data_type == "test":
+		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/test/"
+		num_data = 11490
+	elif data_type == "val":
+		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/val/"
+		num_data = 13368
+	elif data_type == "train":
+		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/train/"
+		num_data = 287227
+	else:
+		raise Exception("Please choose train/val/test")
+
+	print("loading extractive labels from:", data_dir)
+
+	target_positions = [None for x in range(num_data)]
+
+	for idx in range(num_data):
+		filepath = data_dir + "idx.{}.txt".format(idx)
+		with open(filepath, 'r') as f:
+			line = f.readline()
+		try:
+			labels = [int(x) for x in line.split(',') if int(x) < max_num_sentences ]
+		except ValueError:
+			# empty line in the index file
+			# test id: 4309
+			if data_type == "test" and idx in [4309]:
+				labels = []
+			else:
+				raise Exception("some error")
+
+		target_positions[idx] = sorted(labels)
+
+	return target_positions
+
 
 def exp():
     filepaths = {}
@@ -102,4 +136,5 @@ def exp():
     return
 
 if __name__ == "__main__":
-    exp()
+    # exp()
+    x = load_extractive_labels('test')

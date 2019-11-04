@@ -7,6 +7,7 @@
 
 import sys
 from pyrouge import Rouge155
+import pdb
 
 def compute_rouge(system_dir, model_dir):
     """
@@ -18,7 +19,7 @@ def compute_rouge(system_dir, model_dir):
         file.001.txt
         file.002.txt
         file.003.txt
-        
+
     to install pyrouge:
         1) pip install pyrouge
         2) pyrouge_set_rouge_path /absolute/path/to/ROUGE-1.5.5/directory
@@ -34,7 +35,7 @@ def compute_rouge(system_dir, model_dir):
 
     output = r.convert_and_evaluate()
     print(output)
-    output_dict = r.output_to_dict(output)
+    # output_dict = r.output_to_dict(output)
 
 def main():
     if len(sys.argv) != 3:

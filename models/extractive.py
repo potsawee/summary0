@@ -86,7 +86,9 @@ class SentClassifier(nn.Module):
 class ExtractiveSummeriser(nn.Module):
     def __init__(self, args, device):
         super(ExtractiveSummeriser, self).__init__()
+        self.args = args
         self.device = device
+
 
         self.bert = Bert(finetune=True)
         self.bert.expand_positional_embedding(self.bert.model.config.max_position_embeddings * 2) # 512 -> 1024
@@ -126,12 +128,19 @@ class ExtractiveSummeriser(nn.Module):
         for i, doc in enumerate(bert_output):
             sent_vecs[i] = doc[cls_pos[i],:]
 
-
-
         # pad the first sentence manually to max_sent_length
-        max_num_sentences = 100
-        pad_size = max_num_sentences - sent_vecs[0].shape[0]
-        sent_vecs[0] = torch.cat((sent_vecs[0], torch.zeros(pad_size, sent_vecs[0].shape[-1]).to(self.device)))
+        # but torch.nn.utils.rnn.pad_sequence will look for sequences of longest length
+        for i in range(len(sent_vecs)):
+            if sent_vecs[i].shape[0] > self.args['max_num_sentences']:
+                sent_vecs[i] = sent_vecs[i][:self.args['max_num_sentences'],:]
+
+        pad_size = self.args['max_num_sentences'] - sent_vecs[0].shape[0]
+
+        # pad_size must be positive!
+        if pad_size <= 0:
+            sent_vecs[0] = sent_vecs[0][:self.args['max_num_sentences'],:]
+        else:
+            sent_vecs[0] = torch.cat((sent_vecs[0], torch.zeros(pad_size, sent_vecs[0].shape[-1]).to(self.device)))
 
         sent_vecs_padded = torch.nn.utils.rnn.pad_sequence(sent_vecs, batch_first=True)
 
