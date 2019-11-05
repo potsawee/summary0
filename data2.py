@@ -1,6 +1,7 @@
 import torch
 import pickle
 import pdb
+import os
 from tqdm import tqdm
 
 from transformers import BertTokenizer
@@ -8,6 +9,10 @@ from transformers import BertTokenizer
 CLS_TOKEN = '[CLS]'
 SEP_TOKEN = '[SEP]'
 EOS_TOKENS = ['.', '?', '!']
+
+
+EMPTY_ARTICLE_TEST_IDS = [4309]
+EMPTY_ARTICLE_VAL_IDS = [1174, 7812]
 
 class ProcessedDocument(object):
     def __init__(self, encoded_article, attention_mask, token_type_ids, cls_pos):
@@ -21,18 +26,25 @@ class CNNDMloader(object):
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
         self.max_sent_length = max_sent_length
 
-    def from_pickle(self, filepaths):
-        # note that these documents are in 'bytes'
-        # self.train_files = load_data_pickle(filepaths['train'])
-        # self.val_files = load_data_pickle(filepaths['val'])
-        self.test_files = load_data_pickle(filepaths['test'])
+    # def from_pickle(self, filepaths):
+    #     # note that these documents are in 'bytes'
+    #     # self.train_files = load_data_pickle(filepaths['train'])
+    #     # self.val_files = load_data_pickle(filepaths['val'])
+    #     self.test_files = load_data_pickle(filepaths['test'])
 
-    def process_data(self):
-        # input_ids, attention_mask, token_type_ids, cls_pos = inputs
+    def process_data(self, filepaths, data_type):
+        if data_type == 'train':
+            documents = load_data_pickle(filepaths['train'])
+        elif data_type == 'val':
+            documents = load_data_pickle(filepaths['val'])
+        elif data_type == 'test':
+            documents = load_data_pickle(filepaths['test'])
+        else:
+            raise Exception("train/val/test only")
 
-        processed_documents = [None] * len(self.test_files)
+        processed_documents = [None] * len(documents)
 
-        for idx, document in tqdm(enumerate(self.test_files)):
+        for idx, document in tqdm(enumerate(documents)):
             article = document[0].decode('utf-8')
             abstract = document[1].decode('utf-8')
 
@@ -51,7 +63,7 @@ class CNNDMloader(object):
             # Remove the last [CLS]
             tokenized_article = tokenized_article[:-1]
 
-            # If the sequence is too long, truncate it! currently should be 1024
+            # If the sequence is too long, truncate it! currently should be 1024 or 512
             if len(tokenized_article) > self.max_sent_length:
                 tokenized_article = tokenized_article[:self.max_sent_length]
 
@@ -73,7 +85,7 @@ class CNNDMloader(object):
 
             processed_documents[idx] = ProcessedDocument(encoded_article, attention_mask, token_type_ids, cls_pos)
 
-        with open("test31oct.dat.pk.bin", "wb") as f:
+        with open("lib/model_data/{}-{}.dat.pk.bin".format(data_type, self.max_sent_length), "wb") as f:
             pickle.dump(processed_documents, f)
 
 
@@ -90,51 +102,69 @@ def load_data_pickle(path):
     return documents
 
 def load_extractive_labels(data_type, max_num_sentences):
-	if data_type == "test":
-		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/test/"
-		num_data = 11490
-	elif data_type == "val":
-		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/val/"
-		num_data = 13368
-	elif data_type == "train":
-		data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/train/"
-		num_data = 287227
-	else:
-		raise Exception("Please choose train/val/test")
+    if data_type == "test":
+        data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/test/"
+        num_data = 11490
+    elif data_type == "val":
+        data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/val/"
+        num_data = 13368
+    elif data_type == "train":
+        data_dir = "/home/alta/summary/pm574/oracle/extractive_idx-v2/train/"
+        num_data = 287227
+    else:
+        raise Exception("Please choose train/val/test")
+        print("loading extractive labels from:", data_dir)
 
-	print("loading extractive labels from:", data_dir)
+    target_positions = [None for x in range(num_data)]
 
-	target_positions = [None for x in range(num_data)]
+    for idx in range(num_data):
+        filepath = data_dir + "idx.{}.txt".format(idx)
+        # for train/ => the empty files are not even created!
+        if os.path.isfile(filepath):
+            with open(filepath, 'r') as f:
+                line = f.readline()
+            try:
+                labels = [int(x) for x in line.split(',') if int(x) < max_num_sentences ]
+            except ValueError:
+                # empty line in the index file
+                # test id: 4309
+                if data_type == "test" and idx in EMPTY_ARTICLE_TEST_IDS:
+                    labels = []
+                elif data_type == "val" and idx in EMPTY_ARTICLE_VAL_IDS:
+                    labels = []
+                elif data_type == "train":
+                    if line == "":
+                    	labels = []
+                    else:
+                        raise Exception("train data error")
+                else:
+                    print(data_type)
+                    print(idx)
+                    raise Exception("some error")
+        else:
+            labels = []
 
-	for idx in range(num_data):
-		filepath = data_dir + "idx.{}.txt".format(idx)
-		with open(filepath, 'r') as f:
-			line = f.readline()
-		try:
-			labels = [int(x) for x in line.split(',') if int(x) < max_num_sentences ]
-		except ValueError:
-			# empty line in the index file
-			# test id: 4309
-			if data_type == "test" and idx in [4309]:
-				labels = []
-			else:
-				raise Exception("some error")
+        target_positions[idx] = sorted(labels)
 
-		target_positions[idx] = sorted(labels)
+    return target_positions
 
-	return target_positions
-
+def sequence_mask(sequence_length, max_len=None):
+    if max_len is None:
+        max_len = sequence_length.data.max()
+    batch_size = sequence_length.size(0)
+    seq_range = torch.range(0, max_len - 1).long()
+    seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
 
 def exp():
     filepaths = {}
     filepaths['train'] = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/train.pk.bin'
     filepaths['val'] = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/val.pk.bin'
     filepaths['test'] = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
-    cnndmloader = CNNDMloader(max_sent_length=1024)
-    cnndmloader.from_pickle(filepaths)
-    cnndmloader.process_data()
+    cnndmloader = CNNDMloader(max_sent_length=512)
+    # cnndmloader.from_pickle(filepaths)
+    cnndmloader.process_data(filepaths, 'test')
     return
 
 if __name__ == "__main__":
-    # exp()
-    x = load_extractive_labels('test')
+    exp()
+    # x = load_extractive_labels('test')
