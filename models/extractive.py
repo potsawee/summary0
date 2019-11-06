@@ -102,15 +102,20 @@ class ExtractiveSummeriser(nn.Module):
         self.ext_transformer = ExtractiveTransformerEncoder(hidden_size, num_layers=2)
         self.sent_classifer = SentClassifier(hidden_size)
 
-        # load checkpoint
+        # Initialise the Transformer & Classifier
+        # zero out the bias term
+        # print("dear zero initialisation, name = {}".format(name))
+        # don't zero out LayerNorm term e.g. transformer_encoder.layers.0.norm1.weight
         for name, p in self.ext_transformer.named_parameters():
-            if p.dim() > 1:
-                nn.init.xavier_normal_(p)
+            if p.dim() > 1: nn.init.xavier_normal_(p)
             else:
-                # zero out the bias term
-                # print("dear zero initialisation, name = {}".format(name))
-                # don't zero out LayerNorm term e.g. transformer_encoder.layers.0.norm1.weight
                 if name[-4:] == 'bias': p.data.zero_()
+
+        for name, p in self.sent_classifer.named_parameters():
+            if p.dim() > 1: nn.init.xavier_normal_(p)
+            else:
+                if name[-4:] == 'bias': p.data.zero_()
+
         # move all weights of all the layers to GPU (if device = cuda)
         self.to(device)
 
