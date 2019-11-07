@@ -18,7 +18,7 @@ def train_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "DEV"
+    args['model_name'] = "NOV7"
 
     use_gpu = True
     if use_gpu:
@@ -30,7 +30,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '3' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -86,12 +86,13 @@ def train_extractive_model():
 
             idx += BATCH_SIZE
 
-            if bn % 4 == 0:
+            if bn % 2 == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            if bn % 50 == 0:
+            if bn % 20 == 0:
                 print("[{}] batch number {}/{}: loss = {}".format(str(datetime.now()), bn, num_batches, loss))
+                sys.stdout.flush()
 
             if bn % 2000 == 0:
                 # ---------------- Evaluate the model on validation data ---------------- #
@@ -105,20 +106,20 @@ def train_extractive_model():
                 # ------------------- Save the model OR Stop training ------------------- #
                 if avg_val_loss < best_val_loss:
                     stop_counter = 0
+                    best_val_loss = avg_val_loss
                     best_epoch = epoch
                     best_bn = bn
                     savepath = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],epoch,bn)
                     torch.save(ext_sum.state_dict(), savepath)
                     print("Model improved & saved at {}".format(savepath))
                 else:
-                    print("Model not improved #{}".format(stop_counter+1))
-                    if stop_counter == 0:
+                    print("Model not improved #{}".format(stop_counter))
+                    if stop_counter < VAL_STOP_TRAINING:
                         # load the previous model
-                        latest_model = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch, best_bn)
-                        ext_sum.load_state_dict(torch.load())
+                        latest_model = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch,best_bn)
+                        ext_sum.load_state_dict(torch.load(latest_model))
                         ext_sum.train()
-                        stop_counter += 1
-                    elif stop_counter < VAL_STOP_TRAINING:
+                        print("Restored model from {}".format(latest_model))
                         stop_counter += 1
                     else:
                         print("Model has not improved for {} times! Stop training.".format(VAL_STOP_TRAINING))
