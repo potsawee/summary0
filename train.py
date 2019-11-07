@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import pdb
 import pickle
-# import numpy as np
+from datetime import datetime
 
 from models.extractive import *
 from data2 import ProcessedDocument
@@ -18,6 +18,7 @@ def train_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
+    args['model_name'] = "DEV"
 
     use_gpu = True
     if use_gpu:
@@ -27,9 +28,9 @@ def train_extractive_model():
             print('X_SGE_CUDA_DEVICE is set to {}'.format(cuda_device))
             os.environ['CUDA_VISIBLE_DEVICES'] = cuda_device
         else:
-            pdb.set_trace()
+            # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '1' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -37,28 +38,33 @@ def train_extractive_model():
 
     # Define the model
     ext_sum = ExtractiveSummeriser(args, device)
+    print(ext_sum)
 
     # Load and prepare data
     train_data = load_data(args, 'train')
     val_data   = load_data(args, 'val')
 
     # Hyperparameters
-    BATCH_SIZE = 10 # 3 for max_pos = 1024 | 10 for max_pos = 512
-    NUM_EPOCHS = 5
+    BATCH_SIZE = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
+    NUM_EPOCHS = 10
     VAL_BATCH_SIZE = 200
+    VAL_STOP_TRAINING = 3
 
     # Binary Cross Entropy Loss for the Extractive Task
     criterion = nn.BCELoss(reduction='none')
-    optimizer = optim.Adam(ext_sum.parameters(), lr=2e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
+    optimizer = optim.Adam(ext_sum.parameters(), lr=1e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
 
     # zero the parameter gradients
     optimizer.zero_grad()
 
-    # Initialisation: (1) TransformerLayer (2) Logistic Classification
-    # done! => currently in __init__
+    # validation losses
+    best_val_loss = 1e+10
+    best_epoch = 0
+    best_bn = 0
+    stop_counter = 0
 
     for epoch in range(NUM_EPOCHS):
-        print("training epoch {}".format(epoch))
+        print("======================= Training epoch {} =======================".format(epoch))
         num_batches = int(train_data['num_data'] / BATCH_SIZE) # deal with the last batch later
         print("num_batches = {}".format(num_batches))
         idx = 0
@@ -78,58 +84,82 @@ def train_extractive_model():
             loss = (loss * mask.float()).sum() / lengths.sum()
             loss.backward()
 
-            if bn % 2 == 0:
+            idx += BATCH_SIZE
+
+            if bn % 4 == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
-            idx += BATCH_SIZE
-
-            if bn % 10 == 0:
-                print("batch number {}: loss = {}".format(bn, loss))
+            if bn % 50 == 0:
+                print("[{}] batch number {}/{}: loss = {}".format(str(datetime.now()), bn, num_batches, loss))
 
             if bn % 2000 == 0:
-                # -------------- Evaluate the model on validation data -------------- #
-                print("evaluate the model at epoch {} step {}...".format(epoch, bn))
-                num_val_epochs = int(val_data['num_data']/VAL_BATCH_SIZE)
-                print("num_val_epochs = {}".format(num_val_epochs))
-
+                # ---------------- Evaluate the model on validation data ---------------- #
+                print("Evaluating the model at epoch {} step {}".format(epoch, bn))
                 ext_sum.eval() # switch to evaluation mode
-
-                val_idx = 0
-                val_total_loss = 0.0
-                val_total_sentences = 0
                 with torch.no_grad():
-                    for _ in range(num_val_epochs):
-                        val_inputs, val_targets, val_ms = get_a_batch(val_data['encoded_articles'],
-                                                             val_data['attention_masks'], val_data['token_type_ids_arr'],
-                                                             val_data['cls_pos_arr'], val_data['target_pos'],
-                                                             args['max_num_sentences'], val_idx, VAL_BATCH_SIZE, device)
-                        val_mask = val_ms[0]
-                        val_lengths = val_ms[1]
-
-                        val_sent_scores = ext_sum(val_inputs)
-                        val_loss = criterion(val_sent_scores, val_targets)
-                        val_total_loss += (val_loss * val_mask.float()).sum().data
-                        val_total_sentences += val_lengths.sum().data
-
-                        val_idx += VAL_BATCH_SIZE
-
-                        print("#", end="")
-                        sys.stdout.flush()
-
-                avg_val_loss = val_total_loss / val_total_sentences
-                print("\navg_val_loss_per_sentence = {}".format(avg_val_loss))
-
+                    avg_val_loss = evaluate(ext_sum, val_data, VAL_BATCH_SIZE, args, device)
+                print("avg_val_loss_per_sentence = {}".format(avg_val_loss))
                 ext_sum.train() # switch to training mode
-                # ------------------------------------------------------------------ #
 
-                # Save the model!
-                savepath = args['model_save_dir'] + "extsum-AA1-ep{}-bn{}.pt".format(epoch, bn)
-                torch.save(ext_sum.state_dict(), savepath)
+                # ------------------- Save the model OR Stop training ------------------- #
+                if avg_val_loss < best_val_loss:
+                    stop_counter = 0
+                    best_epoch = epoch
+                    best_bn = bn
+                    savepath = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],epoch,bn)
+                    torch.save(ext_sum.state_dict(), savepath)
+                    print("Model improved & saved at {}".format(savepath))
+                else:
+                    print("Model not improved #{}".format(stop_counter+1))
+                    if stop_counter == 0:
+                        # load the previous model
+                        latest_model = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch, best_bn)
+                        ext_sum.load_state_dict(torch.load())
+                        ext_sum.train()
+                        stop_counter += 1
+                    elif stop_counter < VAL_STOP_TRAINING:
+                        stop_counter += 1
+                    else:
+                        print("Model has not improved for {} times! Stop training.".format(VAL_STOP_TRAINING))
+                        return
 
-        # do this when it finishes training an epoch
+    print("End of training extractive model")
 
-    print("Finish training extractive model")
+def evaluate(model, eval_data, eval_batch_size, args, device):
+    # print("evaluate the model at epoch {} step {}...".format(epoch, bn))
+    num_eval_epochs = int(eval_data['num_data']/eval_batch_size)
+    print("num_eval_epochs = {}".format(num_eval_epochs))
+
+    eval_idx = 0
+    eval_total_loss = 0.0
+    eval_total_sentences = 0
+
+    criterion = nn.BCELoss(reduction='none')
+
+    # with torch.no_grad():
+    for _ in range(num_eval_epochs):
+        eval_inputs, eval_targets, eval_ms = get_a_batch(eval_data['encoded_articles'],
+                                             eval_data['attention_masks'], eval_data['token_type_ids_arr'],
+                                             eval_data['cls_pos_arr'], eval_data['target_pos'],
+                                             args['max_num_sentences'], eval_idx, eval_batch_size, device)
+        eval_mask = eval_ms[0]
+        eval_lengths = eval_ms[1]
+
+        eval_sent_scores = model(eval_inputs)
+        eval_loss = criterion(eval_sent_scores, eval_targets)
+        eval_total_loss += (eval_loss * eval_mask.float()).sum().item()
+        eval_total_sentences += eval_lengths.sum().item()
+
+        eval_idx += eval_batch_size
+
+        print("#", end="")
+        sys.stdout.flush()
+
+    print('\n')
+    avg_eval_loss = eval_total_loss / eval_total_sentences
+
+    return avg_eval_loss
 
 def load_data(args, data_type):
     if data_type not in ['train', 'val', 'test']:
