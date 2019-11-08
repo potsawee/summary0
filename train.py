@@ -18,9 +18,9 @@ def train_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV7"
+    args['model_name'] = "NOV7F"
 
-    use_gpu = True
+    use_gpu = False
     if use_gpu:
         if 'X_SGE_CUDA_DEVICE' in os.environ: # to run on CUED stack machine
             print('running on the stack...')
@@ -30,7 +30,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '3' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -43,6 +43,8 @@ def train_extractive_model():
     # Load and prepare data
     train_data = load_data(args, 'train')
     val_data   = load_data(args, 'val')
+
+    pdb.set_trace()
 
     # Hyperparameters
     BATCH_SIZE = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
@@ -65,15 +67,20 @@ def train_extractive_model():
 
     for epoch in range(NUM_EPOCHS):
         print("======================= Training epoch {} =======================".format(epoch))
-        num_batches = int(train_data['num_data'] / BATCH_SIZE) # deal with the last batch later
+        num_batches = int(train_data['num_data'] / BATCH_SIZE) + 1 # plus 1 for the last batch
         print("num_batches = {}".format(num_batches))
         idx = 0
         for bn in range(num_batches):
+
+            # check if it is the last batch
+            if bn == (num_batches - 1): last_batch = True
+            else: last_batch = False
+
             # get my data
             inputs, targets, ms = get_a_batch(train_data['encoded_articles'], train_data['attention_masks'],
                                             train_data['token_type_ids_arr'], train_data['cls_pos_arr'],
                                             train_data['target_pos'], args['max_num_sentences'],
-                                            idx, BATCH_SIZE, device)
+                                            idx, BATCH_SIZE, last_batch, device)
             mask = ms[0]
             lengths = ms[1]
 
@@ -129,7 +136,7 @@ def train_extractive_model():
 
 def evaluate(model, eval_data, eval_batch_size, args, device):
     # print("evaluate the model at epoch {} step {}...".format(epoch, bn))
-    num_eval_epochs = int(eval_data['num_data']/eval_batch_size)
+    num_eval_epochs = int(eval_data['num_data']/eval_batch_size) + 1
     print("num_eval_epochs = {}".format(num_eval_epochs))
 
     eval_idx = 0
@@ -139,11 +146,17 @@ def evaluate(model, eval_data, eval_batch_size, args, device):
     criterion = nn.BCELoss(reduction='none')
 
     # with torch.no_grad():
-    for _ in range(num_eval_epochs):
+    for bn in range(num_eval_epochs):
+
+        # check if it is the last batch
+        if bn == (num_eval_epochs - 1): last_batch = True
+        else: last_batch = False
+
         eval_inputs, eval_targets, eval_ms = get_a_batch(eval_data['encoded_articles'],
                                              eval_data['attention_masks'], eval_data['token_type_ids_arr'],
                                              eval_data['cls_pos_arr'], eval_data['target_pos'],
-                                             args['max_num_sentences'], eval_idx, eval_batch_size, device)
+                                             args['max_num_sentences'], eval_idx, last_batch,
+                                             eval_batch_size, device)
         eval_mask = eval_ms[0]
         eval_lengths = eval_ms[1]
 
@@ -199,7 +212,12 @@ def load_data(args, data_type):
 def get_a_batch(encoded_articles, attention_masks,
                 token_type_ids_arr, cls_pos_arr,
                 target_pos, max_num_sentences,
-                idx, batch_size, device):
+                idx, batch_size, last_batch ,device):
+
+    if last_batch == True:
+        print("the last batch is fetched")
+        num_data = len(encoded_articles)
+        batch_size = num_data - idx
 
     # input (x)
     input_ids = torch.tensor(encoded_articles[idx:idx+batch_size]).to(device)

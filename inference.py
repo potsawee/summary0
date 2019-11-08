@@ -20,8 +20,8 @@ def inference_extractive_model():
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
     args['model_name'] = "NOV7As"
-    args['model_epoch'] = 1
-    args['model_bn'] = '0x'
+    args['model_epoch'] = 0
+    args['model_bn'] = 30000
 
     use_gpu = True
     if use_gpu:
@@ -50,7 +50,7 @@ def inference_extractive_model():
     test_data = load_data(args, 'test')
 
     # Hyperparameters
-    batch_size = 400
+    batch_size = 256
 
     # Binary Cross Entropy Loss for the Extractive Task
     criterion = nn.BCELoss(reduction='none')
@@ -59,7 +59,7 @@ def inference_extractive_model():
     total_test_loss = 0.0
     total_test_sentences = 0
 
-    num_batches = int(test_data['num_data'] / batch_size) # deal with the last batch later
+    num_batches = int(test_data['num_data'] / batch_size) + 1
     print("num_batches = {}".format(num_batches))
     idx = 0
 
@@ -69,11 +69,15 @@ def inference_extractive_model():
 
     with torch.no_grad():
         for bn in range(num_batches):
+            # check if it is the last batch
+            if bn == (num_batches - 1): last_batch = True
+            else: last_batch = False
+
             # get my data
             inputs, targets, ms = get_a_batch(test_data['encoded_articles'], test_data['attention_masks'],
                                             test_data['token_type_ids_arr'], test_data['cls_pos_arr'],
                                             test_data['target_pos'], args['max_num_sentences'],
-                                            idx, batch_size, device)
+                                            idx, batch_size, last_batch, device)
             mask = ms[0]
             lengths = ms[1]
 
@@ -88,6 +92,9 @@ def inference_extractive_model():
             if device == 'cuda':
                 sent_scores = sent_scores.cpu()
 
+            if last_batch:
+                batch_size = test_data['num_data'] - idx
+
             for j in range(batch_size):
                 indices = sent_scores[j].data.numpy().argsort()[-top_k:][::-1]
                 summaries[idx+j] = indices
@@ -101,7 +108,7 @@ def inference_extractive_model():
     avg_test_loss = total_test_loss / total_test_sentences
     print("\navg_test_loss_per_sentence = {}".format(avg_test_loss))
 
-    output_name = "output/extractive/model-{}-ep{}-bn{}.top{}.txt"\
+    output_name = "output/extractive/model-{}-ep{}-bn{}.top{}.txt" \
                   .format(args['model_name'],args['model_epoch'],args['model_bn'],top_k)
 
     with open(output_name , 'w') as f:
