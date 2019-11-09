@@ -18,9 +18,12 @@ def train_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV7F"
+    args['model_name'] = "NOV9B"
 
-    use_gpu = False
+    print("model_name = {}, max_num_sentences = {}, max_pos_embed = {}".format \
+         (args['model_name'], args['max_num_sentences'], args['max_pos_embed']))
+
+    use_gpu = True
     if use_gpu:
         if 'X_SGE_CUDA_DEVICE' in os.environ: # to run on CUED stack machine
             print('running on the stack...')
@@ -30,7 +33,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '3' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -44,17 +47,15 @@ def train_extractive_model():
     train_data = load_data(args, 'train')
     val_data   = load_data(args, 'val')
 
-    pdb.set_trace()
-
     # Hyperparameters
     BATCH_SIZE = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
     NUM_EPOCHS = 10
     VAL_BATCH_SIZE = 200
-    VAL_STOP_TRAINING = 3
+    VAL_STOP_TRAINING = 5
 
     # Binary Cross Entropy Loss for the Extractive Task
     criterion = nn.BCELoss(reduction='none')
-    optimizer = optim.Adam(ext_sum.parameters(), lr=1e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
+    optimizer = optim.Adam(ext_sum.parameters(), lr=2e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
 
     # zero the parameter gradients
     optimizer.zero_grad()
@@ -93,7 +94,7 @@ def train_extractive_model():
 
             idx += BATCH_SIZE
 
-            if bn % 2 == 0:
+            if bn % 4 == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -155,8 +156,8 @@ def evaluate(model, eval_data, eval_batch_size, args, device):
         eval_inputs, eval_targets, eval_ms = get_a_batch(eval_data['encoded_articles'],
                                              eval_data['attention_masks'], eval_data['token_type_ids_arr'],
                                              eval_data['cls_pos_arr'], eval_data['target_pos'],
-                                             args['max_num_sentences'], eval_idx, last_batch,
-                                             eval_batch_size, device)
+                                             args['max_num_sentences'], eval_idx, eval_batch_size,
+                                             last_batch, device)
         eval_mask = eval_ms[0]
         eval_lengths = eval_ms[1]
 
@@ -179,7 +180,7 @@ def load_data(args, data_type):
     if data_type not in ['train', 'val', 'test']:
         raise ValueError('train/val/test only')
 
-    path_data        = args['model_data_dir'] + "{}-{}.dat.pk.bin".format(data_type, args['max_pos_embed'])
+    path_data        = args['model_data_dir'] + "{}-{}.dat.nltk.pk.bin".format(data_type, args['max_pos_embed'])
     path_target      = args['model_data_dir'] + "target.{}-{}.pk.bin".format(data_type, args['max_num_sentences'])
     with open(path_data, "rb") as f: data = pickle.load(f)
     with open(path_target, "rb") as f: target_pos = pickle.load(f)
@@ -212,10 +213,10 @@ def load_data(args, data_type):
 def get_a_batch(encoded_articles, attention_masks,
                 token_type_ids_arr, cls_pos_arr,
                 target_pos, max_num_sentences,
-                idx, batch_size, last_batch ,device):
+                idx, batch_size, last_batch, device):
 
     if last_batch == True:
-        print("the last batch is fetched")
+        # print("the last batch is fetched")
         num_data = len(encoded_articles)
         batch_size = num_data - idx
 
