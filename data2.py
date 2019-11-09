@@ -3,6 +3,7 @@ import pickle
 import pdb
 import os
 from tqdm import tqdm
+from nltk import tokenize
 
 from transformers import BertTokenizer
 
@@ -26,12 +27,6 @@ class CNNDMloader(object):
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
         self.max_sent_length = max_sent_length
 
-    # def from_pickle(self, filepaths):
-    #     # note that these documents are in 'bytes'
-    #     # self.train_files = load_data_pickle(filepaths['train'])
-    #     # self.val_files = load_data_pickle(filepaths['val'])
-    #     self.test_files = load_data_pickle(filepaths['test'])
-
     def process_data(self, filepaths, data_type):
         if data_type == 'train':
             documents = load_data_pickle(filepaths['train'])
@@ -48,20 +43,29 @@ class CNNDMloader(object):
             article = document[0].decode('utf-8')
             abstract = document[1].decode('utf-8')
 
-            # PAD [CLS] at the beginning
-            tokenized_article = [CLS_TOKEN]
+            # # PAD [CLS] at the beginning
+            # tokenized_article = [CLS_TOKEN]
+            #
+            # for tok in self.tokenizer.tokenize(article):
+            #     if tok in EOS_TOKENS:
+            #         # ADD [SEP] and [CLS] between sentences
+            #         tokenized_article.append(tok)
+            #         tokenized_article.append(SEP_TOKEN)
+            #         tokenized_article.append(CLS_TOKEN)
+            #     else:
+            #         tokenized_article.append(tok)
+            #
+            # # Remove the last [CLS]
+            # tokenized_article = tokenized_article[:-1]
 
-            for tok in self.tokenizer.tokenize(article):
-                if tok in EOS_TOKENS:
-                    # ADD [SEP] and [CLS] between sentences
-                    tokenized_article.append(tok)
-                    tokenized_article.append(SEP_TOKEN)
-                    tokenized_article.append(CLS_TOKEN)
-                else:
-                    tokenized_article.append(tok)
+            # Use NLTK instead of my own way!!
+            sentences = tokenize.sent_tokenize(article)
+            tokenized_article = []
+            for sent in sentences:
+                # ADD [CLS] at the beginning & [SEP] at the end
+                words = [CLS_TOKEN] + self.tokenizer.tokenize(sent) + [SEP_TOKEN]
+                tokenized_article += words
 
-            # Remove the last [CLS]
-            tokenized_article = tokenized_article[:-1]
 
             # If the sequence is too long, truncate it! currently should be 1024 or 512
             if len(tokenized_article) > self.max_sent_length:
@@ -85,7 +89,7 @@ class CNNDMloader(object):
 
             processed_documents[idx] = ProcessedDocument(encoded_article, attention_mask, token_type_ids, cls_pos)
 
-        with open("lib/model_data/{}-{}.dat.pk.bin".format(data_type, self.max_sent_length), "wb") as f:
+        with open("lib/model_data/{}-{}.dat.nltk.pk.bin".format(data_type, self.max_sent_length), "wb") as f:
             pickle.dump(processed_documents, f)
 
 
@@ -117,7 +121,7 @@ def load_extractive_labels(data_type, max_num_sentences):
 
     target_positions = [None for x in range(num_data)]
 
-    for idx in range(num_data):
+    for idx in tqdm(range(num_data)):
         filepath = data_dir + "idx.{}.txt".format(idx)
         # for train/ => the empty files are not even created!
         if os.path.isfile(filepath):
@@ -136,11 +140,11 @@ def load_extractive_labels(data_type, max_num_sentences):
                     if line == "":
                     	labels = []
                     else:
-                        raise Exception("train data error")
+                        raise Exception("data error #1")
                 else:
                     print(data_type)
                     print(idx)
-                    raise Exception("some error")
+                    raise Exception("data error #2")
         else:
             labels = []
 
@@ -161,10 +165,12 @@ def exp():
     filepaths['val'] = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/val.pk.bin'
     filepaths['test'] = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
     cnndmloader = CNNDMloader(max_sent_length=512)
-    # cnndmloader.from_pickle(filepaths)
-    cnndmloader.process_data(filepaths, 'test')
+    cnndmloader.process_data(filepaths, 'train')
     return
 
 if __name__ == "__main__":
     exp()
     # x = load_extractive_labels('test')
+    # target_pos = load_extractive_labels('train', max_num_sentences=32)
+    # pdb.set_trace()
+    # print("data2 exp done!")
