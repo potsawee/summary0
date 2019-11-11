@@ -5,6 +5,7 @@ import torch.nn as nn
 import torch.optim as optim
 import pdb
 import pickle
+import random
 from datetime import datetime
 
 from models.extractive import *
@@ -12,19 +13,34 @@ from data2 import ProcessedDocument
 
 def train_extractive_model():
     print("Start training extractive model")
-
+    # ---------------------------------------------------------------------------------- #
     args = {}
     args['max_pos_embed'] = 512
     args['max_num_sentences'] = 32
+    args['eval_nbatches'] = 2000
+    args['update_nbatches'] = 2
+    args['batch_size'] = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
+    args['num_epochs'] = 10
+    args['val_batch_size'] = 200
+    args['val_stop_training'] = 20
+    args['random_seed'] = 28
+    args['lr'] = 5e-6
+    args['adjust_lr'] = True
+    # ---------------------------------------------------------------------------------- #
+    args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV9Is"
+    args['model_name'] = "NOV11D"
+    # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
+    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV9-best.pt"
+    args['load_model'] = None
+    args['best_val_loss'] = 1e+10
+    # ---------------------------------------------------------------------------------- #
 
     print("model_name = {}, max_num_sentences = {}, max_pos_embed = {}".format \
          (args['model_name'], args['max_num_sentences'], args['max_pos_embed']))
 
-    use_gpu = True
-    if use_gpu:
+    if args['use_gpu']:
         if 'X_SGE_CUDA_DEVICE' in os.environ: # to run on CUED stack machine
             print('running on the stack...')
             cuda_device = os.environ['X_SGE_CUDA_DEVICE']
@@ -33,7 +49,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -43,25 +59,36 @@ def train_extractive_model():
     ext_sum = ExtractiveSummeriser(args, device)
     print(ext_sum)
 
+    # Load model if specified (path to pytorch .pt)
+    if args['load_model'] != None:
+        ext_sum.load_state_dict(torch.load(args['load_model']))
+        ext_sum.train()
+        print("Loaded model from {}".format(args['load_model']))
+    else:
+        print("Train a new model")
+
     # Load and prepare data
     train_data = load_data(args, 'train')
     val_data   = load_data(args, 'val')
 
+    # random seed
+    random.seed(args['random_seed'])
+
     # Hyperparameters
-    BATCH_SIZE = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
-    NUM_EPOCHS = 10
-    VAL_BATCH_SIZE = 200
-    VAL_STOP_TRAINING = 20
+    BATCH_SIZE = args['batch_size']
+    NUM_EPOCHS = args['num_epochs']
+    VAL_BATCH_SIZE = args['val_batch_size']
+    VAL_STOP_TRAINING = args['val_stop_training']
 
     # Binary Cross Entropy Loss for the Extractive Task
     criterion = nn.BCELoss(reduction='none')
-    optimizer = optim.Adam(ext_sum.parameters(), lr=1e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
+    optimizer = optim.Adam(ext_sum.parameters(), lr=args['lr'] , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
 
     # zero the parameter gradients
     optimizer.zero_grad()
 
     # validation losses
-    best_val_loss = 1e+10
+    best_val_loss = args['best_val_loss']
     best_epoch = 0
     best_bn = 0
     stop_counter = 0
@@ -70,11 +97,16 @@ def train_extractive_model():
         print("======================= Training epoch {} =======================".format(epoch))
         num_batches = int(train_data['num_data'] / BATCH_SIZE) + 1 # plus 1 for the last batch
         print("num_batches = {}".format(num_batches))
-        idx = 0
-        for bn in range(num_batches):
 
+        # Random shuffle the training data
+        train_data = shuffle_data(train_data)
+
+        idx = 0
+
+        for bn in range(num_batches):
             # adjust the learning rate of the optimizer
-            adjust_lr(optimizer, epoch, epoch_size=num_batches, bn=bn, warmup=10000)
+            if args['adjust_lr']:
+                adjust_lr(optimizer, epoch, epoch_size=num_batches, bn=bn, warmup=10000)
 
             # check if it is the last batch
             if bn == (num_batches - 1): last_batch = True
@@ -97,7 +129,7 @@ def train_extractive_model():
 
             idx += BATCH_SIZE
 
-            if bn % 2 == 0:
+            if bn % args['update_nbatches'] == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -105,7 +137,7 @@ def train_extractive_model():
                 print("[{}] batch number {}/{}: loss = {}".format(str(datetime.now()), bn, num_batches, loss))
                 sys.stdout.flush()
 
-            if bn % 2000 == 0:
+            if bn % args['eval_nbatches'] == 0: # e.g. eval every 2000 batches
                 # ---------------- Evaluate the model on validation data ---------------- #
                 print("Evaluating the model at epoch {} step {}".format(epoch, bn))
                 print("learning_rate = {}".format(optimizer.param_groups[0]['lr']))
@@ -222,6 +254,29 @@ def load_data(args, data_type):
     }
 
     return data_dict
+
+def shuffle_data(data_dict):
+    # data_dict generated by load_data
+    _x = list(zip(
+        data_dict['encoded_articles'],
+        data_dict['attention_masks'],
+        data_dict['token_type_ids_arr'],
+        data_dict['cls_pos_arr'],
+        data_dict['target_pos']
+    ))
+
+    random.shuffle(_x)
+    x1, x2, x3, x4, x5 = zip(*_x)
+
+    shuffled_data_dict = {
+        'num_data': data_dict['num_data'],
+        'encoded_articles': x1,
+        'attention_masks': x2,
+        'token_type_ids_arr': x3,
+        'cls_pos_arr': x4,
+        'target_pos': x5
+    }
+    return shuffled_data_dict
 
 def get_a_batch(encoded_articles, attention_masks,
                 token_type_ids_arr, cls_pos_arr,
