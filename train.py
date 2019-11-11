@@ -18,7 +18,7 @@ def train_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV9B"
+    args['model_name'] = "NOV9Is"
 
     print("model_name = {}, max_num_sentences = {}, max_pos_embed = {}".format \
          (args['model_name'], args['max_num_sentences'], args['max_pos_embed']))
@@ -33,7 +33,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '3' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -51,11 +51,11 @@ def train_extractive_model():
     BATCH_SIZE = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
     NUM_EPOCHS = 10
     VAL_BATCH_SIZE = 200
-    VAL_STOP_TRAINING = 5
+    VAL_STOP_TRAINING = 20
 
     # Binary Cross Entropy Loss for the Extractive Task
     criterion = nn.BCELoss(reduction='none')
-    optimizer = optim.Adam(ext_sum.parameters(), lr=2e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
+    optimizer = optim.Adam(ext_sum.parameters(), lr=1e-6 , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
 
     # zero the parameter gradients
     optimizer.zero_grad()
@@ -72,6 +72,9 @@ def train_extractive_model():
         print("num_batches = {}".format(num_batches))
         idx = 0
         for bn in range(num_batches):
+
+            # adjust the learning rate of the optimizer
+            adjust_lr(optimizer, epoch, epoch_size=num_batches, bn=bn, warmup=10000)
 
             # check if it is the last batch
             if bn == (num_batches - 1): last_batch = True
@@ -94,7 +97,7 @@ def train_extractive_model():
 
             idx += BATCH_SIZE
 
-            if bn % 4 == 0:
+            if bn % 2 == 0:
                 optimizer.step()
                 optimizer.zero_grad()
 
@@ -105,6 +108,7 @@ def train_extractive_model():
             if bn % 2000 == 0:
                 # ---------------- Evaluate the model on validation data ---------------- #
                 print("Evaluating the model at epoch {} step {}".format(epoch, bn))
+                print("learning_rate = {}".format(optimizer.param_groups[0]['lr']))
                 ext_sum.eval() # switch to evaluation mode
                 with torch.no_grad():
                     avg_val_loss = evaluate(ext_sum, val_data, VAL_BATCH_SIZE, args, device)
@@ -134,6 +138,15 @@ def train_extractive_model():
                         return
 
     print("End of training extractive model")
+
+def adjust_lr(optimizer, epoch, epoch_size, bn, warmup=10000):
+    """to adjust the learning rate"""
+    step = (epoch * epoch_size) + bn + 1 # plus 1 to avoid ZeroDivisionError
+    lr = 2e-3 * min(step**(-0.5), step*(warmup**(-1.5)))
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = lr
+
+    return
 
 def evaluate(model, eval_data, eval_batch_size, args, device):
     # print("evaluate the model at epoch {} step {}...".format(epoch, bn))
