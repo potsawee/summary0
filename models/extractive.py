@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import math
 from transformers import BertModel, BertConfig
 
 import pdb
@@ -44,7 +45,7 @@ class Bert(nn.Module):
 
 
 class ExtractiveTransformerEncoder(nn.Module):
-    def __init__(self, hidden_size, num_layers=1):
+    def __init__(self, hidden_size, num_layers, max_len):
         super(ExtractiveTransformerEncoder, self).__init__()
 
         from torch.nn.modules.transformer import TransformerEncoder, TransformerEncoderLayer
@@ -54,14 +55,27 @@ class ExtractiveTransformerEncoder(nn.Module):
         dim_feedforward = 2048
         dropout = 0.1
 
+        self.positional_encoder = PositionalEncoding(d_model, dropout=dropout, max_len=max_len)
+
         transformer_encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward, dropout)
         self.transformer_encoder = TransformerEncoder(transformer_encoder_layer, num_layers, norm=None)
 
-    def forward(self, x):
+    def forward(self, x, mask=None, key_padding_mask=None):
         """
         x = BERT output of size (batch_size, sequence_length, hidden_size)
+        mask = [src/tgt/memory]_mask should be filled with
+            float('-inf') for the masked positions and float(0.0) else. These masks
+            ensure that predictions for position i depend only on the unmasked positions
+            j and are applied identically for each sequence in a batch.
+
+        key_padding_mask = [src/tgt/memory]_key_padding_mask should be a ByteTensor where True values are positions
+            that should be masked with float('-inf') and False values will be unchanged.
+            This mask ensures that no information will be taken from position i if
+            it is masked, and has a separate mask for each sequence in a batch.
         """
-        output = self.transformer_encoder(x, mask=None)
+        # TODO: mask & Positional Embedding!
+        x = self.positional_encoder(x)
+        output = self.transformer_encoder(x, mask=mask, src_key_padding_mask=key_padding_mask)
         return output
 
 class SentClassifier(nn.Module):
@@ -82,10 +96,9 @@ class SentClassifier(nn.Module):
 
         return sent_scores
 
-
-class ExtractiveSummeriser(nn.Module):
+class ExtractiveSummariser(nn.Module):
     def __init__(self, args, device):
-        super(ExtractiveSummeriser, self).__init__()
+        super(ExtractiveSummariser, self).__init__()
         self.args = args
         self.device = device
 
@@ -99,7 +112,7 @@ class ExtractiveSummeriser(nn.Module):
 
         hidden_size = self.bert.model.config.hidden_size # 768
 
-        self.ext_transformer = ExtractiveTransformerEncoder(hidden_size, num_layers=2)
+        self.ext_transformer = ExtractiveTransformerEncoder(hidden_size, num_layers=2, max_len=self.args['max_num_sentences'])
         self.sent_classifer = SentClassifier(hidden_size)
 
         # Initialise the Transformer & Classifier
@@ -109,12 +122,14 @@ class ExtractiveSummeriser(nn.Module):
         for name, p in self.ext_transformer.named_parameters():
             if p.dim() > 1: nn.init.xavier_normal_(p)
             else:
-                if name[-4:] == 'bias': p.data.zero_()
+                # if name[-4:] == 'bias': p.data.zero_()
+                if name[-4:] == 'bias': nn.init.zeros_(p)
 
         for name, p in self.sent_classifer.named_parameters():
             if p.dim() > 1: nn.init.xavier_normal_(p)
             else:
-                if name[-4:] == 'bias': p.data.zero_()
+                # if name[-4:] == 'bias': p.data.zero_()
+                if name[-4:] == 'bias': nn.init.zeros_(p)
 
         # move all weights of all the layers to GPU (if device = cuda)
         self.to(device)
@@ -124,7 +139,6 @@ class ExtractiveSummeriser(nn.Module):
         # src = ...
         # cls_pos = postions of the CLS tokens (begining of sentences)
         """
-
         # TODO: clean up this
         input_ids, attention_mask, token_type_ids, cls_pos = inputs
 
@@ -135,13 +149,16 @@ class ExtractiveSummeriser(nn.Module):
 
         bert_output = self.bert(input_ids, attention_mask, token_type_ids)
 
-        sent_vecs = [None for x in range(bert_output.shape[0])]
+        # N = batch_size
+        N = bert_output.shape[0]
+        sent_vecs = [None for x in range(N)]
+
         for i, doc in enumerate(bert_output):
             sent_vecs[i] = doc[cls_pos[i],:]
 
         # pad the first sentence manually to max_sent_length
         # but torch.nn.utils.rnn.pad_sequence will look for sequences of longest length
-        for i in range(len(sent_vecs)):
+        for i in range(N):
             if sent_vecs[i].shape[0] > self.args['max_num_sentences']:
                 sent_vecs[i] = sent_vecs[i][:self.args['max_num_sentences'],:]
 
@@ -155,8 +172,43 @@ class ExtractiveSummeriser(nn.Module):
 
         sent_vecs_padded = torch.nn.utils.rnn.pad_sequence(sent_vecs, batch_first=True)
 
-        sent_vecs_trans = self.ext_transformer(sent_vecs_padded)
+        # key_padding_mask => (batch_size, num_sentences)
+        key_padding_mask = [None for x in range(N)]
+        for i in range(N):
+            slen = len(cls_pos[i])
+            if slen <= self.args['max_num_sentences']:
+                key_padding_mask[i] = [False]*slen + [True]*(self.args['max_num_sentences']-slen)
+            else:
+                key_padding_mask[i] = [False]*self.args['max_num_sentences']
+        key_padding_mask = torch.tensor(key_padding_mask, dtype=torch.bool).to(self.device) # torch.unit8 (torch1.1) or torch.bool (torch1.2)
+        # input to transformer => (sequence_length, batch_size, hidden_size)
+        # tranpose before feedng it to the Transformer then tranpose back ---> maybe there is a better way??
+        sent_vecs_padded = torch.transpose(sent_vecs_padded, 0, 1)
+        sent_vecs_trans = self.ext_transformer(sent_vecs_padded, key_padding_mask=key_padding_mask)
+        sent_vecs_trans = torch.transpose(sent_vecs_trans, 0, 1)
 
         sent_scores = self.sent_classifer(sent_vecs_trans).squeeze(-1)
 
         return sent_scores
+
+# ------------------------------------------------------------------------------------------------------ #
+# ------------------------------------------- Helper Classes ------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------ #
+class PositionalEncoding(nn.Module):
+    # from https://pytorch.org/tutorials/beginner/transformer_tutorial.html
+    def __init__(self, d_model, dropout=0.1, max_len=5000):
+        super(PositionalEncoding, self).__init__()
+        self.dropout = nn.Dropout(p=dropout)
+
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0).transpose(0, 1)
+        self.register_buffer('pe', pe)
+
+    def forward(self, x):
+        # does it broadcast the second dim automatically => yes
+        x = x + self.pe[:x.size(0), :]
+        return self.dropout(x)

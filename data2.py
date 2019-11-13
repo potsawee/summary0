@@ -168,9 +168,43 @@ def exp():
     cnndmloader.process_data(filepaths, 'train')
     return
 
+
+def cleanup_work():
+    # there are 114 files in the training data that have missing articles!
+    # this work aims to remove them!
+    path_data        = "lib/model_data/train-512.dat.nltk.pk.bin"
+    path_target      = "lib/model_data/target.train-32.pk.bin"
+    with open(path_data, "rb") as f: data = pickle.load(f)
+    with open(path_target, "rb") as f: target_pos = pickle.load(f)
+    assert len(data) == len(target_pos), "len(data) != len(target_pos)"
+
+    num_data = len(data)
+    count    = 0
+    clean_data = []
+    clean_target_pos = []
+    for i, doc in enumerate(data):
+        # encoded_articles[i]   = doc.encoded_article
+        # attention_masks[i]    = doc.attention_mask
+        # token_type_ids_arr[i] = doc.token_type_ids
+        # cls_pos_arr[i]        = doc.cls_pos
+        # target                = target_pos[i]
+        if len(doc.cls_pos) == 0:
+            count += 1
+        else:
+            clean_data.append(doc)
+            clean_target_pos.append(target_pos[i])
+    print("remove {} files out of {} in original".format(count, num_data))
+
+    with open("lib/model_data/trainx-512.dat.nltk.pk.bin", "wb") as f:
+        pickle.dump(clean_data, f)
+    with open("lib/model_data/target.trainx-32.pk.bin", "wb") as f:
+        pickle.dump(clean_target_pos, f)
+    print("cleanup done & saved")
+
 if __name__ == "__main__":
-    exp()
+    # exp()
     # x = load_extractive_labels('test')
     # target_pos = load_extractive_labels('train', max_num_sentences=32)
     # pdb.set_trace()
     # print("data2 exp done!")
+    cleanup_work()

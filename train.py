@@ -22,7 +22,7 @@ def train_extractive_model():
     args['batch_size'] = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
     args['num_epochs'] = 10
     args['val_batch_size'] = 200
-    args['val_stop_training'] = 20
+    args['val_stop_training'] = 10
     args['random_seed'] = 28
     args['lr'] = 5e-6
     args['adjust_lr'] = True
@@ -30,7 +30,7 @@ def train_extractive_model():
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV11D"
+    args['model_name'] = "NOV13F"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
     # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV9-best.pt"
     args['load_model'] = None
@@ -49,14 +49,14 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
     print("device = {}".format(device))
 
     # Define the model
-    ext_sum = ExtractiveSummeriser(args, device)
+    ext_sum = ExtractiveSummariser(args, device)
     print(ext_sum)
 
     # Load model if specified (path to pytorch .pt)
@@ -68,7 +68,7 @@ def train_extractive_model():
         print("Train a new model")
 
     # Load and prepare data
-    train_data = load_data(args, 'train')
+    train_data = load_data(args, 'trainx')
     val_data   = load_data(args, 'val')
 
     # random seed
@@ -216,13 +216,14 @@ def evaluate(model, eval_data, eval_batch_size, args, device):
         print("#", end="")
         sys.stdout.flush()
 
+
     print('\n')
     avg_eval_loss = eval_total_loss / eval_total_sentences
 
     return avg_eval_loss
 
 def load_data(args, data_type):
-    if data_type not in ['train', 'val', 'test']:
+    if data_type not in ['train', 'val', 'test', 'trainx']:
         raise ValueError('train/val/test only')
 
     path_data        = args['model_data_dir'] + "{}-{}.dat.nltk.pk.bin".format(data_type, args['max_pos_embed'])
@@ -270,11 +271,11 @@ def shuffle_data(data_dict):
 
     shuffled_data_dict = {
         'num_data': data_dict['num_data'],
-        'encoded_articles': x1,
-        'attention_masks': x2,
+        'encoded_articles':   x1,
+        'attention_masks':    x2,
         'token_type_ids_arr': x3,
-        'cls_pos_arr': x4,
-        'target_pos': x5
+        'cls_pos_arr':        x4,
+        'target_pos':         x5
     }
     return shuffled_data_dict
 
