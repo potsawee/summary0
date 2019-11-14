@@ -5,6 +5,10 @@ from transformers import BertModel, BertConfig
 
 import pdb
 
+if   torch.__version__ == '1.1.0': KEYPADMASK_DTYPE = torch.uint8
+elif torch.__version__ == '1.2.0': KEYPADMASK_DTYPE = torch.bool
+else: raise Exception("Torch Version not supoorted")
+
 class Bert(nn.Module):
     def __init__(self, finetune):
         super(Bert, self).__init__()
@@ -73,7 +77,6 @@ class ExtractiveTransformerEncoder(nn.Module):
             This mask ensures that no information will be taken from position i if
             it is masked, and has a separate mask for each sequence in a batch.
         """
-        # TODO: mask & Positional Embedding!
         x = self.positional_encoder(x)
         output = self.transformer_encoder(x, mask=mask, src_key_padding_mask=key_padding_mask)
         return output
@@ -139,7 +142,6 @@ class ExtractiveSummariser(nn.Module):
         # src = ...
         # cls_pos = postions of the CLS tokens (begining of sentences)
         """
-        # TODO: clean up this
         input_ids, attention_mask, token_type_ids, cls_pos = inputs
 
         # Size....
@@ -180,7 +182,7 @@ class ExtractiveSummariser(nn.Module):
                 key_padding_mask[i] = [False]*slen + [True]*(self.args['max_num_sentences']-slen)
             else:
                 key_padding_mask[i] = [False]*self.args['max_num_sentences']
-        key_padding_mask = torch.tensor(key_padding_mask, dtype=torch.bool).to(self.device) # torch.unit8 (torch1.1) or torch.bool (torch1.2)
+        key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(self.device)
         # input to transformer => (sequence_length, batch_size, hidden_size)
         # tranpose before feedng it to the Transformer then tranpose back ---> maybe there is a better way??
         sent_vecs_padded = torch.transpose(sent_vecs_padded, 0, 1)

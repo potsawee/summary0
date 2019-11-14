@@ -18,7 +18,7 @@ def train_extractive_model():
     args['max_pos_embed'] = 512
     args['max_num_sentences'] = 32
     args['eval_nbatches'] = 2000
-    args['update_nbatches'] = 2
+    args['update_nbatches'] = 4
     args['batch_size'] = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
     args['num_epochs'] = 10
     args['val_batch_size'] = 200
@@ -30,9 +30,9 @@ def train_extractive_model():
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV13F"
+    args['model_name'] = "NOV14dev"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
-    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV9-best.pt"
+    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV13F-ep1-bn0.pt"
     args['load_model'] = None
     args['best_val_loss'] = 1e+10
     # ---------------------------------------------------------------------------------- #
@@ -315,7 +315,8 @@ def generate_sequence_mask(sequence_length, max_len=None):
         max_len = sequence_length.data.max()
 
     batch_size = sequence_length.size(0)
-    seq_range = torch.range(0, max_len - 1).long()
+    # seq_range = torch.range(0, max_len - 1).long() ---> torch.range is depricated
+    seq_range = torch.arange(0, max_len).long()
     seq_range_expand = seq_range.unsqueeze(0).expand(batch_size, max_len)
     seq_range_expand = torch.autograd.Variable(seq_range_expand)
 
