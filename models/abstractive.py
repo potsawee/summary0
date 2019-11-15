@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 from transformers import BertModel, BertConfig
 
 from models.extractive import Bert, PositionalEncoding
@@ -36,7 +37,16 @@ class AbsDecoder(nn.Module):
         transformer_decoder_layer = TransformerDecoderLayer(d_model, nhead, dim_feedforward, dropout)
         self.transformer_decoder = TransformerDecoder(transformer_decoder_layer, num_layers, norm=None)
 
-    def forward(self, tgt, memory, tgt_mask=None, tgt_key_padding_mask=None):
+        # Linear & Softmax Layers
+        self.linear_decoder = nn.Linear(in_features=hidden_size, out_features=vocab_size, bias=True)
+        self.softmax_decoder = nn.Softmax(dim=-1)
+
+    def forward(self, tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask):
+        # tgt                     => [batch_size, tgt_length]
+        # memory                  => [batch_size, memory_length, hidden_size]
+        # tgt_mask                => [tgt_length, tgt_length]
+        # tgt_key_padding_mask    => [batch_size, tgt_length]
+        # memory_key_padding_mask => [batch_size, memory_length] # memory_length = max_pos_embed
         tgt_embed = self.decoder_embedding(tgt)
 
         tgt_embed = self.positional_encoder(tgt_embed)
@@ -44,11 +54,17 @@ class AbsDecoder(nn.Module):
         # inputs into the Transformer have batch_size in the 2nd dim
         tgt_embed = torch.transpose(tgt_embed, 0, 1)
         memory    = torch.transpose(memory, 0, 1)
+        # tgt_mask                => ensure no information from future context (self-attention layer)
+        # tgt_key_padding_mask    => ensure no information from padding in decoder (self-attention layer)
+        # memory_key_padding_mask => ensure no information from padding in encoder (enc-dec attention)
         output = self.transformer_decoder(tgt_embed, memory, tgt_mask=tgt_mask, memory_mask=None,
                                           tgt_key_padding_mask=tgt_key_padding_mask,
-                                          memory_key_padding_mask=None)
+                                          memory_key_padding_mask=memory_key_padding_mask)
 
-        return torch.transpose(output, 0, 1)
+        output = self.linear_decoder(torch.transpose(output, 0, 1))
+        output = self.softmax_decoder(output)
+
+        return output
 
 
 class AbstractiveSummariser(nn.Module):
@@ -65,23 +81,40 @@ class AbstractiveSummariser(nn.Module):
         self.decoder = AbsDecoder(vocab_size, hidden_size, num_layers=6,
                                  max_len=self.args['max_summary_length'])
 
+        self.tgt_mask = self._create_tgt_mask(args['max_summary_length'], device)
+
         # move all weights of all the layers to GPU (if device = cuda)
         self.to(device)
 
     def forward(self, abs_batch):
-        # check that source and target match
         # enc_inputs:  inputs to the BERT model
         # enc_targets: extractive target labels
-        # enc_ms:      mask & length for computing extractive loss
         # tgt_ids:     input to the decoder
         # tgt_key_padding_mask: mask for the decoder
-        enc_inputs, enc_targets, enc_ms    = abs_batch['encoder']
+
+        enc_inputs, enc_targets, _, _ = abs_batch['encoder']
+        memory_key_padding_mask       = abs_batch['memory']
         tgt_ids, tgt_key_padding_mask = abs_batch['decoder']
+
         if enc_inputs[0].size(0) != tgt_ids.size(0):
             raise RuntimeError("the batch number of src and tgt must be equal")
 
         # enc_output => (batch_size, max_pos_embed,      hidden_size)
         # dec_output => (batch_size, max_summary_length, hidden_size)
+
         enc_output = self.encoder(enc_inputs) # memory
-        dec_output = self.decoder(tgt_ids, enc_output, tgt_mask=None,
-                                  tgt_key_padding_mask=tgt_key_padding_mask)
+        dec_output = self.decoder(tgt_ids, enc_output,
+                                  tgt_mask=self.tgt_mask,
+                                  tgt_key_padding_mask=tgt_key_padding_mask,
+                                  memory_key_padding_mask=memory_key_padding_mask)
+
+        return dec_output
+
+
+    def _create_tgt_mask(self, tgt_max_length, device):
+        # tgt_mask to ensure future information is used
+        tgt_mask_shape = (tgt_max_length, tgt_max_length)
+        x = np.triu(np.ones(tgt_mask_shape), k=1).astype('float')
+        x[x == 1] = float('-inf')
+        tgt_mask = torch.from_numpy(x).type(torch.float32).to(device)
+        return tgt_mask

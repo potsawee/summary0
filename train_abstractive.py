@@ -28,7 +28,7 @@ def train_abstractive_model():
     args['lr'] = 5e-6
     args['adjust_lr'] = True
     # ---------------------------------------------------------------------------------- #
-    args['use_gpu'] = True
+    args['use_gpu'] = False
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
     args['model_name'] = "NOV14dev"
@@ -60,17 +60,23 @@ def train_abstractive_model():
     assert data['num_data'] == summary['num_data'], "data['num_data'] != summary['num_data']"
 
     abs_sum = AbstractiveSummariser(args, device=device)
+
+    criterion = nn.NLLLoss(reduction='none')
+
+    num_batches = int(data['num_data']/args['batch_size']) + 1
     idx = 0
-    batch = get_a_batch_abs(data['encoded_articles'], data['attention_masks'],
-                        data['token_type_ids_arr'], data['cls_pos_arr'],
-                        data['target_pos'], args['max_num_sentences'],
-                        summary['encoded_abstracts'], summary['abs_lengths'],
-                        args['max_summary_length'],
-                        idx, args['batch_size'], False, device)
+    for bn in range(num_batches):
+        batch = get_a_batch_abs(data['encoded_articles'], data['attention_masks'],
+                            data['token_type_ids_arr'], data['cls_pos_arr'],
+                            data['target_pos'], args['max_num_sentences'],
+                            summary['encoded_abstracts'], summary['abs_lengths'],
+                            args['max_summary_length'],
+                            idx, args['batch_size'], False, device)
 
-    abs_sum(batch)
+        output = abs_sum(batch)
+        pdb.set_trace()
 
-    pdb.set_trace()
+
     print("End of training extractive model")
 
 def get_a_batch_abs(encoded_articles, attention_masks,
@@ -85,10 +91,18 @@ def get_a_batch_abs(encoded_articles, attention_masks,
         batch_size = num_data - idx
 
     # input to the encoder
-    enc_inputs, enc_targets, ms = get_a_batch(encoded_articles, attention_masks,
-                                    token_type_ids_arr, cls_pos_arr,
-                                    target_pos, max_num_sentences,
-                                    idx, batch_size, last_batch, device)
+    enc_inputs, enc_targets, enc_key_padding_mask, ms = \
+        get_a_batch(encoded_articles, attention_masks,
+                    token_type_ids_arr, cls_pos_arr,
+                    target_pos, max_num_sentences,
+                    idx, batch_size, last_batch, device)
+
+    # enc_key_padding_mask => the mask for input into the transformer for extractive task
+    # memory_key_padding_mask => the mask for decoder (enc-dec attention) for abstractive task
+    # memory_key_padding_mask => shape = [batch_size, max_pos_embed]
+    mem_mask = enc_inputs[1].clone() # bert_attn_mask
+    mem_mask = ~mem_mask.bool()
+    memory_key_padding_mask = torch.tensor(mem_mask.data, dtype=KEYPADMASK_DTYPE).to(device)
 
     # input to the decoder
     tgt_ids = torch.tensor(encoded_abstracts[idx:idx+batch_size]).to(device)
@@ -98,9 +112,11 @@ def get_a_batch_abs(encoded_articles, attention_masks,
     tgt_key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
 
     batch = {
-        'encoder': (enc_inputs, enc_targets, ms),
+        'encoder': (enc_inputs, enc_targets, enc_key_padding_mask, ms),
+        'memory':  memory_key_padding_mask,
         'decoder': (tgt_ids, tgt_key_padding_mask)
     }
+
     return batch
 
 def load_summary(args, data_type):
