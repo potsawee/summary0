@@ -19,9 +19,11 @@ def inference_extractive_model():
     args['max_num_sentences'] = 32
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV7As"
+    args['model_name'] = "NOV13Fc"
     args['model_epoch'] = 0
-    args['model_bn'] = 30000
+    args['model_bn'] = 4000
+    top_k = 10
+
 
     use_gpu = True
     if use_gpu:
@@ -33,14 +35,14 @@ def inference_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '1' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
     print("device = {}".format(device))
 
     # Define and Load the model
-    ext_sum = ExtractiveSummeriser(args, device)
+    ext_sum = ExtractiveSummariser(args, device)
     trained_model = args['model_save_dir']+"extsum-{}-ep{}-bn{}.pt".format(args['model_name'],args['model_epoch'],args['model_bn'])
     ext_sum.load_state_dict(torch.load(trained_model))
     ext_sum.eval() # switch it to eval mode
@@ -65,7 +67,6 @@ def inference_extractive_model():
 
     # To store the predictions
     summaries = [[-1] for _ in range(test_data['num_data'])]
-    top_k = 5
 
     with torch.no_grad():
         for bn in range(num_batches):
@@ -74,15 +75,16 @@ def inference_extractive_model():
             else: last_batch = False
 
             # get my data
-            inputs, targets, ms = get_a_batch(test_data['encoded_articles'], test_data['attention_masks'],
-                                            test_data['token_type_ids_arr'], test_data['cls_pos_arr'],
-                                            test_data['target_pos'], args['max_num_sentences'],
-                                            idx, batch_size, last_batch, device)
+            inputs, targets, key_padding_mask, ms = \
+                get_a_batch(test_data['encoded_articles'], test_data['attention_masks'],
+                            test_data['token_type_ids_arr'], test_data['cls_pos_arr'],
+                            test_data['target_pos'], args['max_num_sentences'],
+                            idx, batch_size, last_batch, device)
             mask = ms[0]
             lengths = ms[1]
 
             # forward + backward + optimize
-            sent_scores = ext_sum(inputs)
+            sent_scores = ext_sum(inputs, key_padding_mask)
 
             # compute loss --- may be useless but compute anyway
             loss = criterion(sent_scores, targets)
@@ -108,7 +110,7 @@ def inference_extractive_model():
     avg_test_loss = total_test_loss / total_test_sentences
     print("\navg_test_loss_per_sentence = {}".format(avg_test_loss))
 
-    output_name = "output/extractive/model-{}-ep{}-bn{}.top{}.txt" \
+    output_name = "out_inference/extractive/model-{}-ep{}-bn{}.top{}.txt" \
                   .format(args['model_name'],args['model_epoch'],args['model_bn'],top_k)
 
     with open(output_name , 'w') as f:

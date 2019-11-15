@@ -11,6 +11,10 @@ from datetime import datetime
 from models.extractive import *
 from data2 import ProcessedDocument
 
+if   torch.__version__ == '1.1.0': KEYPADMASK_DTYPE = torch.uint8
+elif torch.__version__ == '1.2.0': KEYPADMASK_DTYPE = torch.bool
+else: raise Exception("Torch Version not supoorted")
+
 def train_extractive_model():
     print("Start training extractive model")
     # ---------------------------------------------------------------------------------- #
@@ -23,17 +27,17 @@ def train_extractive_model():
     args['num_epochs'] = 10
     args['val_batch_size'] = 200
     args['val_stop_training'] = 10
-    args['random_seed'] = 28
+    args['random_seed'] = 30
     args['lr'] = 5e-6
     args['adjust_lr'] = True
     # ---------------------------------------------------------------------------------- #
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV14dev"
+    args['model_name'] = "NOV15A"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
-    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV13F-ep1-bn0.pt"
-    args['load_model'] = None
+    args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV13Fc-ep0-bn4000.pt"
+    # args['load_model'] = None
     args['best_val_loss'] = 1e+10
     # ---------------------------------------------------------------------------------- #
 
@@ -49,7 +53,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -113,15 +117,16 @@ def train_extractive_model():
             else: last_batch = False
 
             # get my data
-            inputs, targets, ms = get_a_batch(train_data['encoded_articles'], train_data['attention_masks'],
-                                            train_data['token_type_ids_arr'], train_data['cls_pos_arr'],
-                                            train_data['target_pos'], args['max_num_sentences'],
-                                            idx, BATCH_SIZE, last_batch, device)
+            inputs, targets, key_padding_mask, ms  = \
+                get_a_batch(train_data['encoded_articles'], train_data['attention_masks'],
+                            train_data['token_type_ids_arr'], train_data['cls_pos_arr'],
+                            train_data['target_pos'], args['max_num_sentences'],
+                            idx, BATCH_SIZE, last_batch, device)
             mask = ms[0]
             lengths = ms[1]
 
             # forward + backward + optimize
-            sent_scores = ext_sum(inputs)
+            sent_scores = ext_sum(inputs, key_padding_mask)
 
             loss = criterion(sent_scores, targets)
             loss = (loss * mask.float()).sum() / lengths.sum()
@@ -198,15 +203,17 @@ def evaluate(model, eval_data, eval_batch_size, args, device):
         if bn == (num_eval_epochs - 1): last_batch = True
         else: last_batch = False
 
-        eval_inputs, eval_targets, eval_ms = get_a_batch(eval_data['encoded_articles'],
-                                             eval_data['attention_masks'], eval_data['token_type_ids_arr'],
-                                             eval_data['cls_pos_arr'], eval_data['target_pos'],
-                                             args['max_num_sentences'], eval_idx, eval_batch_size,
-                                             last_batch, device)
+        eval_inputs, eval_targets, keenc_inputsy_padding_mask, eval_ms = \
+            get_a_batch(eval_data['encoded_articles'],
+                        eval_data['attention_masks'], eval_data['token_type_ids_arr'],
+                        eval_data['cls_pos_arr'], eval_data['target_pos'],
+                        args['max_num_sentences'], eval_idx, eval_batch_size,
+                        last_batch, device)
+
         eval_mask = eval_ms[0]
         eval_lengths = eval_ms[1]
 
-        eval_sent_scores = model(eval_inputs)
+        eval_sent_scores = model(eval_inputs, key_padding_mask)
         eval_loss = criterion(eval_sent_scores, eval_targets)
         eval_total_loss += (eval_loss * eval_mask.float()).sum().item()
         eval_total_sentences += eval_lengths.sum().item()
@@ -282,7 +289,8 @@ def shuffle_data(data_dict):
 def get_a_batch(encoded_articles, attention_masks,
                 token_type_ids_arr, cls_pos_arr,
                 target_pos, max_num_sentences,
-                idx, batch_size, last_batch, device):
+                idx, batch_size, last_batch, device,
+                abstractive_task=False):
 
     if last_batch == True:
         # print("the last batch is fetched")
@@ -296,7 +304,19 @@ def get_a_batch(encoded_articles, attention_masks,
     cls_pos = cls_pos_arr[idx:idx+batch_size]
     inputs = (input_ids, att_mask, tok_type_ids, cls_pos)
 
-    # mask & lengths --- sentence-level
+    # (encoder_output) key_padding_mask
+    # enc_key_padding_mask => (batch_size, num_sentences)
+    enc_key_padding_mask = [None for _ in range(batch_size)]
+    for i in range(batch_size):
+        slen = len(cls_pos[i])
+        if slen <= max_num_sentences:
+            enc_key_padding_mask[i] = [False]*slen + [True]*(max_num_sentences-slen)
+        else:
+            enc_key_padding_mask[i] = [False]*max_num_sentences
+    enc_key_padding_mask = torch.tensor(enc_key_padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
+
+
+    # mask & lengths --- sentence-level (for computing loss)
     sent_lengths = [len(cls) for cls in cls_pos]
     lengths = torch.tensor(sent_lengths, dtype=torch.long, device=device)
     mask = generate_sequence_mask(sequence_length=lengths, max_len=max_num_sentences)
@@ -308,7 +328,7 @@ def get_a_batch(encoded_articles, attention_masks,
         targets[j,pos] = targets[j,pos].fill_(1.0)
         # mask[j,pos] = mask[j,pos] * 10
 
-    return inputs, targets, (mask, lengths)
+    return inputs, targets, enc_key_padding_mask, (mask, lengths)
 
 def generate_sequence_mask(sequence_length, max_len=None):
     if max_len is None:
