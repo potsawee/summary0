@@ -39,7 +39,7 @@ class AbsDecoder(nn.Module):
 
         # Linear & Softmax Layers
         self.linear_decoder = nn.Linear(in_features=hidden_size, out_features=vocab_size, bias=True)
-        self.softmax_decoder = nn.Softmax(dim=-1)
+        self.logsoftmax_decoder = nn.LogSoftmax(dim=-1)
 
     def forward(self, tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask):
         # tgt                     => [batch_size, tgt_length]
@@ -49,11 +49,12 @@ class AbsDecoder(nn.Module):
         # memory_key_padding_mask => [batch_size, memory_length] # memory_length = max_pos_embed
         tgt_embed = self.decoder_embedding(tgt)
 
-        tgt_embed = self.positional_encoder(tgt_embed)
-
         # inputs into the Transformer have batch_size in the 2nd dim
         tgt_embed = torch.transpose(tgt_embed, 0, 1)
         memory    = torch.transpose(memory, 0, 1)
+
+        tgt_embed = self.positional_encoder(tgt_embed)
+
         # tgt_mask                => ensure no information from future context (self-attention layer)
         # tgt_key_padding_mask    => ensure no information from padding in decoder (self-attention layer)
         # memory_key_padding_mask => ensure no information from padding in encoder (enc-dec attention)
@@ -62,7 +63,7 @@ class AbsDecoder(nn.Module):
                                           memory_key_padding_mask=memory_key_padding_mask)
 
         output = self.linear_decoder(torch.transpose(output, 0, 1))
-        output = self.softmax_decoder(output)
+        output = self.logsoftmax_decoder(output)
 
         return output
 
@@ -91,10 +92,9 @@ class AbstractiveSummariser(nn.Module):
         # enc_targets: extractive target labels
         # tgt_ids:     input to the decoder
         # tgt_key_padding_mask: mask for the decoder
-
-        enc_inputs, enc_targets, _, _ = abs_batch['encoder']
-        memory_key_padding_mask       = abs_batch['memory']
-        tgt_ids, tgt_key_padding_mask = abs_batch['decoder']
+        enc_inputs, enc_targets, _, _    = abs_batch['encoder']
+        memory_key_padding_mask          = abs_batch['memory']
+        tgt_ids, tgt_key_padding_mask, _ = abs_batch['decoder']
 
         if enc_inputs[0].size(0) != tgt_ids.size(0):
             raise RuntimeError("the batch number of src and tgt must be equal")
