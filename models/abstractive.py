@@ -84,6 +84,12 @@ class AbstractiveSummariser(nn.Module):
 
         self.tgt_mask = self._create_tgt_mask(args['max_summary_length'], device)
 
+        # Initialise the Transformer (decoder)
+        for name, p in self.decoder.named_parameters():
+            if p.dim() > 1: nn.init.xavier_normal_(p)
+            else:
+                if name[-4:] == 'bias': nn.init.zeros_(p)
+
         # move all weights of all the layers to GPU (if device = cuda)
         self.to(device)
 

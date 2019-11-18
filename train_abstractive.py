@@ -21,26 +21,28 @@ def train_abstractive_model():
     args = {}
     args['max_pos_embed'] = 512
     args['max_num_sentences'] = 32
-    args['eval_nbatches'] = 2000
+    args['eval_nbatches'] = 2500
     args['update_nbatches'] = 5
     args['batch_size'] = 6
-    args['num_epochs'] = 10
+    args['num_epochs'] = 5
     args['val_batch_size'] = 100
-    args['val_stop_training'] = 10
+    args['val_stop_training'] = 20
     args['random_seed'] = 28
-    args['lr'] = 5e-6
+    args['lr_enc'] = 5e-6
+    args['lr_dec'] = 2e-4
     args['adjust_lr'] = True
     # ---------------------------------------------------------------------------------- #
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "ANOV17A"
+    args['model_name'] = "ANOV18A"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
     # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/abssum-NOV13F-ep1-bn0.pt"
     args['load_model'] = None
     args['best_val_loss'] = 1e+10
     # ---------------------------------------------------------------------------------- #
     args['max_summary_length'] = 96
+    args['label_smoothing'] = 0.1
     # ---------------------------------------------------------------------------------- #
 
     if args['use_gpu']:
@@ -60,6 +62,8 @@ def train_abstractive_model():
 
     train_data    = load_data(args, 'trainx')
     train_summary = load_summary(args, 'trainx')
+    # train_data    = load_data(args, 'test')
+    # train_summary = load_summary(args, 'test')
     val_data      = load_data(args, 'val')
     val_summary   = load_summary(args, 'val')
 
@@ -80,9 +84,17 @@ def train_abstractive_model():
 
     vocab_size = abs_sum.decoder.linear_decoder.out_features
 
-    criterion = nn.NLLLoss(reduction='none')
-    optimizer = optim.Adam(abs_sum.parameters(), lr=args['lr'] , betas=(0.9,0.999), eps=1e-08, weight_decay=0)
-    optimizer.zero_grad()
+    if args['label_smoothing'] > 0.0:
+        criterion = LabelSmoothingLoss(num_classes=vocab_size,
+                        smoothing=args['label_smoothing'], reduction='none')
+    else:
+        criterion = nn.NLLLoss(reduction='none')
+
+    # we use two separate optimisers (encoder & decoder)
+    optimizer_enc = optim.Adam(abs_sum.encoder.parameters(),lr=args['lr_enc'],betas=(0.9,0.999),eps=1e-08,weight_decay=0)
+    optimizer_dec = optim.Adam(abs_sum.decoder.parameters(),lr=args['lr_dec'],betas=(0.9,0.999),eps=1e-08,weight_decay=0)
+    optimizer_enc.zero_grad()
+    optimizer_dec.zero_grad()
 
     # validation losses
     best_val_loss = args['best_val_loss']
@@ -101,8 +113,16 @@ def train_abstractive_model():
         idx = 0
 
         for bn in range(num_batches):
+            # adjust the learning rate of the optimizer
+            if args['adjust_lr']:
+                adjust_lr2(optimizer_enc, optimizer_dec,
+                        epoch, epoch_size=num_batches, bn=bn,
+                        warmup_enc=20000, warmup_dec=10000)
+
             # check if it is the last batch
-            if bn == (num_batches - 1): last_batch = True
+            if bn == (num_batches - 1):
+                last_batch = True
+                continue # unepxected error --- num_data % batch_size = 0
             else: last_batch = False
 
             batch = get_a_batch_abs(train_data['encoded_articles'], train_data['attention_masks'],
@@ -127,17 +147,21 @@ def train_abstractive_model():
             idx += BATCH_SIZE
 
             if bn % args['update_nbatches'] == 0:
-                optimizer.step()
-                optimizer.zero_grad()
+                optimizer_enc.step()
+                optimizer_dec.step()
+                optimizer_enc.zero_grad()
+                optimizer_dec.zero_grad()
 
-            if bn % 20 == 0:
+            if bn % 50 == 0:
                 print("[{}] batch number {}/{}: loss = {}".format(str(datetime.now()), bn, num_batches, loss))
                 sys.stdout.flush()
+
 
             if bn % args['eval_nbatches'] == 0: # e.g. eval every 2000 batches
                 # ---------------- Evaluate the model on validation data ---------------- #
                 print("Evaluating the model at epoch {} step {}".format(epoch, bn))
-                print("learning_rate = {}".format(optimizer.param_groups[0]['lr']))
+                print("learning_rate_encoder = {}".format(optimizer_enc.param_groups[0]['lr']))
+                print("learning_rate_decoder = {}".format(optimizer_dec.param_groups[0]['lr']))
                 abs_sum.eval() # switch to evaluation mode
                 with torch.no_grad():
                     avg_val_loss = evaluate2(abs_sum, val_data, val_summary, VAL_BATCH_SIZE, vocab_size, args, device)
@@ -156,16 +180,28 @@ def train_abstractive_model():
                     print("Model not improved #{}".format(stop_counter))
                     if stop_counter < VAL_STOP_TRAINING:
                         # load the previous model
-                        latest_model = args['model_save_dir']+"abssum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch,best_bn)
-                        abs_sum.load_state_dict(torch.load(latest_model))
-                        abs_sum.train()
-                        print("Restored model from {}".format(latest_model))
+                        # latest_model = args['model_save_dir']+"abssum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch,best_bn)
+                        # abs_sum.load_state_dict(torch.load(latest_model))
+                        # abs_sum.train()
+                        # print("Restored model from {}".format(latest_model))
                         stop_counter += 1
                     else:
                         print("Model has not improved for {} times! Stop training.".format(VAL_STOP_TRAINING))
                         return
 
     print("End of training abstractive model")
+
+def adjust_lr2(optimizer_enc, optimizer_dec, epoch, epoch_size, bn, warmup_enc, warmup_dec):
+    """to adjust the learning rate for both encoder & decoder"""
+    step = (epoch * epoch_size) + bn + 1 # plus 1 to avoid ZeroDivisionError
+
+    lr_enc = 2e-3 * min(step**(-0.5), step*(warmup_enc**(-1.5)))
+    lr_dec = 0.1  * min(step**(-0.5), step*(warmup_dec**(-1.5)))
+
+    for param_group in optimizer_enc.param_groups: param_group['lr'] = lr_enc
+    for param_group in optimizer_dec.param_groups: param_group['lr'] = lr_dec
+
+    return
 
 def shift_decoder_target(batch_decoder):
     # MASK_TOKEN_ID = 103
@@ -266,7 +302,8 @@ def get_a_batch_abs(encoded_articles, attention_masks,
                 target_pos, max_num_sentences,
                 encoded_abstracts, abs_lengths,
                 max_summary_length,
-                idx, batch_size, last_batch, device):
+                idx, batch_size, last_batch, device,
+                decoding=False):
 
     if last_batch == True:
         num_data = len(encoded_articles)
@@ -291,15 +328,19 @@ def get_a_batch_abs(encoded_articles, attention_masks,
     memory_key_padding_mask = torch.tensor(mem_mask.data, dtype=KEYPADMASK_DTYPE).to(device)
 
     # input to the decoder
-    tgt_ids = torch.tensor(encoded_abstracts[idx:idx+batch_size]).to(device)
-    key_padding_mask = [None for _ in range(batch_size)]
-    decoder_mask     = [None for _ in range(batch_size)]
-    for j in range(batch_size):
-        key_padding_mask[j] = [False]*abs_lengths[idx+j]+[True]*(max_summary_length-abs_lengths[idx+j])
-        decoder_mask[j]     = [1.0]*abs_lengths[idx+j]+[0.0]*(max_summary_length-abs_lengths[idx+j])
-    tgt_key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
-    decoder_mask = torch.tensor(decoder_mask, dtype=torch.float).to(device)
-
+    if not decoding:
+        tgt_ids = torch.tensor(encoded_abstracts[idx:idx+batch_size]).to(device)
+        key_padding_mask = [None for _ in range(batch_size)]
+        decoder_mask     = [None for _ in range(batch_size)]
+        for j in range(batch_size):
+            key_padding_mask[j] = [False]*abs_lengths[idx+j]+[True]*(max_summary_length-abs_lengths[idx+j])
+            decoder_mask[j]     = [1.0]*abs_lengths[idx+j]+[0.0]*(max_summary_length-abs_lengths[idx+j])
+        tgt_key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
+        decoder_mask = torch.tensor(decoder_mask, dtype=torch.float).to(device)
+    else:
+        tgt_ids = None
+        tgt_key_padding_mask = None
+        decoder_mask = None
 
     batch = {
         'encoder': (enc_inputs, enc_targets, enc_key_padding_mask, ms),
@@ -331,6 +372,28 @@ def load_summary(args, data_type):
     }
     return summary_dict
 
+class LabelSmoothingLoss(nn.Module):
+    def __init__(self, num_classes, smoothing=0.0, dim=-1, reduction='mean'):
+        super(LabelSmoothingLoss, self).__init__()
+        self.confidence = 1.0 - smoothing
+        self.smoothing = smoothing
+        self.num_classes = num_classes
+        self.dim = dim
+        self.reduction = reduction
+
+    def forward(self, pred, target):
+        # pred --- logsoftmax already applied
+        with torch.no_grad():
+            true_dist = torch.zeros_like(pred)
+            true_dist.fill_(self.smoothing / (self.num_classes - 1))
+            true_dist.scatter_(1, target.data.unsqueeze(1), self.confidence)
+
+        if self.reduction == 'mean':
+            return torch.mean(torch.sum(-true_dist * pred, dim=self.dim))
+        elif self.reduction == 'none':
+            return torch.sum(-true_dist * pred, dim=self.dim)
+        else:
+            raise RuntimeError("reduction mode not supported")
 
 if __name__ == "__main__":
     train_abstractive_model()
