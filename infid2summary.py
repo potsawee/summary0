@@ -9,7 +9,7 @@ from data2 import load_data_pickle
 from data2 import EOS_TOKENS
 
 
-def generate_summary(filepath, output, top_k=3):
+def generate_summary(filepath, output, top_k=3, trigram_blocking=False):
     documents = load_data_pickle(filepath)
 
     assert len(documents) == len(output), "len(documents) != len(output)"
@@ -22,14 +22,42 @@ def generate_summary(filepath, output, top_k=3):
         article = document[0].decode('utf-8')
         sentences = tokenize.sent_tokenize(article)
 
-        s = []
+        S = []
         length = len(sentences)
-        for j in output[idx][:top_k]:
-            if j < length: s.append(sentences[j])
 
-        if len(s) < 1:
-            pdb.set_trace()
-        summaries[idx] = s
+        if trigram_blocking:
+            # Trigram blocking
+            # Given summary S and candidate sentence c
+            # do not choose c if there is a trigram in c that is also in S
+            seen_trigram = []
+            for j in output[idx]:
+                if j < length:
+                    candidate = sentences[j]
+                    words = tokenize.word_tokenize(candidate)
+                    found_existing_tg = False
+                else:
+                    continue
+
+                for p in range(len(words)-2):
+                    tg = (words[p], words[p+1], words[p+2])
+                    if tg not in seen_trigram:
+                        seen_trigram.append(tg)
+                    else:
+                        found_existing_tg = True
+
+                if found_existing_tg == False: S.append(candidate)
+                else: pass
+
+                if len(S) == top_k: break
+
+        else:
+            for j in output[idx][:top_k]:
+                if j < length: S.append(sentences[j])
+
+        if len(S) < 1:
+            # pdb.set_trace()
+            print("id {} len(s) == 0".format(idx))
+        summaries[idx] = S
 
     print("generate_summary done")
     return summaries
@@ -59,15 +87,15 @@ def write_summary_files(dir, summaries):
     return
 
 def main():
-    model = 'NOV7F'
+    model = 'NOV13Fc'
     epoch = 0
-    bn = 32000
+    bn = 4000
 
     test_data_path = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
-    inf_path = '/home/alta/summary/pm574/summariser0/out_inference/extractive/model-{}-ep{}-bn{}.top5.txt'.format(model, epoch, bn)
-    summary_out_dir = '/home/alta/summary/pm574/summariser0/out_summary/extractive/model-{}-ep{}-bn{}/'.format(model, epoch, bn)
+    inf_path = '/home/alta/summary/pm574/summariser0/out_inference/extractive/model-{}-ep{}-bn{}.top10.txt'.format(model, epoch, bn)
+    summary_out_dir = '/home/alta/summary/pm574/summariser0/out_summary/extractive/model-{}-ep{}-bn{}-tg/'.format(model, epoch, bn)
     output = read_inference_output(inf_path)
-    summaries = generate_summary(test_data_path, output)
+    summaries = generate_summary(test_data_path, output, top_k=3, trigram_blocking=True)
     write_summary_files(summary_out_dir, summaries)
 
 if __name__ == "__main__":

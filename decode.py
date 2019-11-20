@@ -97,6 +97,11 @@ def beam_search(model, data, args, start_idx, batch_size, num_batches, k):
             beam_scores = scores.cpu().numpy()
             beams = new_beams
 
+            if (t % 10) == 0:
+                print("{}=".format(t), end="")
+                sys.stdout.flush()
+        print("{}=#".format(t))
+
         # finish t = 0,...,max_summary_length
         for j in range(batch_size):
             # summaries[j] = tgtids2summary(tgt_ids[j].cpu().numpy())
@@ -107,7 +112,6 @@ def beam_search(model, data, args, start_idx, batch_size, num_batches, k):
         print("[{}] batch {}/{} --- idx [{},{})".format(
                 str(datetime.now()), bn+1, num_batches,
                 start_idx+idx, start_idx+idx+batch_size))
-        sys.stdout.flush()
         idx += batch_size
 
 def greedy_search(model, data, args, start_idx, batch_size, num_batches):
@@ -188,18 +192,19 @@ def decode(start_idx):
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "ANOV19B"
-    args['model_epoch'] = 0
-    args['model_bn'] = 0
+    args['model_name'] = "ANOV18C"
+    args['model_epoch'] = 4
+    args['model_bn'] = 45000
     args['decoding_method'] = 'beamsearch'
     # ---------------------------------------------------------------------------------- #
-    args['summary_out_dir'] = \
-    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}-{}/' \
-    .format(args['model_name'], args['model_epoch'], args['model_bn'], args['decoding_method'])
-    # ---------------------------------------------------------------------------------- #
     start_idx = start_idx
-    batch_size = 4
-    num_batches = 5
+    batch_size = 100
+    num_batches = 20
+    beam_width = 5
+    # ---------------------------------------------------------------------------------- #
+    args['summary_out_dir'] = \
+    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}-{}{}/' \
+    .format(args['model_name'], args['model_epoch'], args['model_bn'], args['decoding_method'], beam_width)
     # ---------------------------------------------------------------------------------- #
 
     use_gpu = True
@@ -212,7 +217,7 @@ def decode(start_idx):
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '1' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -240,8 +245,7 @@ def decode(start_idx):
     elif args['decoding_method'] == 'beamsearch':
         with torch.no_grad():
             print("------------------ BEAM SEARCH ------------------")
-            beam_width = 5
-            print("beam_width = {}".beam_width)
+            print("beam_width = {}".format(beam_width))
             beam_search(abs_sum, test_data, args, start_idx, batch_size, num_batches, k=beam_width)
     else:
         raise RuntimeError('decoding method not supported')

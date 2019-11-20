@@ -22,22 +22,22 @@ def train_extractive_model():
     args['max_pos_embed'] = 512
     args['max_num_sentences'] = 32
     args['eval_nbatches'] = 2000
-    args['update_nbatches'] = 4
+    args['update_nbatches'] = 2
     args['batch_size'] = 8 # 3 for max_pos = 1024 | 10 for max_pos = 512 | 8 for max_pos = 512 with validation
     args['num_epochs'] = 10
     args['val_batch_size'] = 200
     args['val_stop_training'] = 10
-    args['random_seed'] = 30
+    args['random_seed'] = 52
     args['lr'] = 5e-6
     args['adjust_lr'] = True
     # ---------------------------------------------------------------------------------- #
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "NOV15A"
+    args['model_name'] = "NOV17B"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
-    args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV13Fc-ep0-bn4000.pt"
-    # args['load_model'] = None
+    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/extsum-NOV13Fc-ep0-bn4000.pt"
+    args['load_model'] = None
     args['best_val_loss'] = 1e+10
     # ---------------------------------------------------------------------------------- #
 
@@ -53,7 +53,7 @@ def train_extractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '2' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '1' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -203,7 +203,7 @@ def evaluate(model, eval_data, eval_batch_size, args, device):
         if bn == (num_eval_epochs - 1): last_batch = True
         else: last_batch = False
 
-        eval_inputs, eval_targets, keenc_inputsy_padding_mask, eval_ms = \
+        eval_inputs, eval_targets, key_padding_mask, eval_ms = \
             get_a_batch(eval_data['encoded_articles'],
                         eval_data['attention_masks'], eval_data['token_type_ids_arr'],
                         eval_data['cls_pos_arr'], eval_data['target_pos'],
@@ -289,8 +289,7 @@ def shuffle_data(data_dict):
 def get_a_batch(encoded_articles, attention_masks,
                 token_type_ids_arr, cls_pos_arr,
                 target_pos, max_num_sentences,
-                idx, batch_size, last_batch, device,
-                abstractive_task=False):
+                idx, batch_size, last_batch, device):
 
     if last_batch == True:
         # print("the last batch is fetched")

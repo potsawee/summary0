@@ -5,10 +5,6 @@ from transformers import BertModel, BertConfig
 
 import pdb
 
-if   torch.__version__ == '1.1.0': KEYPADMASK_DTYPE = torch.uint8
-elif torch.__version__ == '1.2.0': KEYPADMASK_DTYPE = torch.bool
-else: raise Exception("Torch Version not supoorted")
-
 class Bert(nn.Module):
     def __init__(self, finetune):
         super(Bert, self).__init__()
@@ -137,7 +133,7 @@ class ExtractiveSummariser(nn.Module):
         # move all weights of all the layers to GPU (if device = cuda)
         self.to(device)
 
-    def forward(self, inputs):
+    def forward(self, inputs, key_padding_mask):
         """
         # src = ...
         # cls_pos = postions of the CLS tokens (begining of sentences)
@@ -175,14 +171,15 @@ class ExtractiveSummariser(nn.Module):
         sent_vecs_padded = torch.nn.utils.rnn.pad_sequence(sent_vecs, batch_first=True)
 
         # key_padding_mask => (batch_size, num_sentences)
-        key_padding_mask = [None for x in range(N)]
-        for i in range(N):
-            slen = len(cls_pos[i])
-            if slen <= self.args['max_num_sentences']:
-                key_padding_mask[i] = [False]*slen + [True]*(self.args['max_num_sentences']-slen)
-            else:
-                key_padding_mask[i] = [False]*self.args['max_num_sentences']
-        key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(self.device)
+        # key_padding_mask = [None for x in range(N)]
+        # for i in range(N):
+        #     slen = len(cls_pos[i])
+        #     if slen <= self.args['max_num_sentences']:
+        #         key_padding_mask[i] = [False]*slen + [True]*(self.args['max_num_sentences']-slen)
+        #     else:
+        #         key_padding_mask[i] = [False]*self.args['max_num_sentences']
+        # key_padding_mask = torch.tensor(key_padding_mask, dtype=KEYPADMASK_DTYPE).to(self.device)
+
         # input to transformer => (sequence_length, batch_size, hidden_size)
         # tranpose before feedng it to the Transformer then tranpose back ---> maybe there is a better way??
         sent_vecs_padded = torch.transpose(sent_vecs_padded, 0, 1)
@@ -201,7 +198,6 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, dropout=0.1, max_len=5000):
         super(PositionalEncoding, self).__init__()
         self.dropout = nn.Dropout(p=dropout)
-
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
@@ -211,6 +207,6 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # does it broadcast the second dim automatically => yes
+        # it should automatically broadcast the 'batch_size' dimension. --- which is the second dim!!
         x = x + self.pe[:x.size(0), :]
         return self.dropout(x)

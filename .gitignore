@@ -6,3 +6,6 @@ out_inference/
 out_summary/
 **/__pycache__
 train2.py
+note.txt
+temp/
+submit/

@@ -41,7 +41,7 @@ class AbsDecoder(nn.Module):
         self.linear_decoder = nn.Linear(in_features=hidden_size, out_features=vocab_size, bias=True)
         self.logsoftmax_decoder = nn.LogSoftmax(dim=-1)
 
-    def forward(self, tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask):
+    def forward(self, tgt, memory, tgt_mask, tgt_key_padding_mask, memory_key_padding_mask, logsoftmax=True):
         # tgt                     => [batch_size, tgt_length]
         # memory                  => [batch_size, memory_length, hidden_size]
         # tgt_mask                => [tgt_length, tgt_length]
@@ -63,7 +63,9 @@ class AbsDecoder(nn.Module):
                                           memory_key_padding_mask=memory_key_padding_mask)
 
         output = self.linear_decoder(torch.transpose(output, 0, 1))
-        output = self.logsoftmax_decoder(output)
+
+        if logsoftmax:
+            output = self.logsoftmax_decoder(output)
 
         return output
 
@@ -73,6 +75,7 @@ class AbstractiveSummariser(nn.Module):
         super(AbstractiveSummariser, self).__init__()
         self.args = args
         self.device = device
+        self.is_training = True
 
         self.encoder = AbsEncoder(finetune=True)
 
@@ -112,10 +115,9 @@ class AbstractiveSummariser(nn.Module):
         dec_output = self.decoder(tgt_ids, enc_output,
                                   tgt_mask=self.tgt_mask,
                                   tgt_key_padding_mask=tgt_key_padding_mask,
-                                  memory_key_padding_mask=memory_key_padding_mask)
-
+                                  memory_key_padding_mask=memory_key_padding_mask,
+                                  logsoftmax=self.is_training)
         return dec_output
-
 
     def _create_tgt_mask(self, tgt_max_length, device):
         # tgt_mask to ensure future information is used
