@@ -3,6 +3,7 @@ import os
 import sys
 import torch
 import pdb
+import numpy as np
 from datetime import datetime
 
 from transformers import BertTokenizer
@@ -25,6 +26,90 @@ START_TOKEN_ID = bert_tokenizer.convert_tokens_to_ids(START_TOKEN)
 SEP_TOKEN_ID   = bert_tokenizer.convert_tokens_to_ids(SEP_TOKEN)
 STOP_TOKEN_ID  = bert_tokenizer.convert_tokens_to_ids(STOP_TOKEN)
 
+TEST_DATA_SIZE = 11490
+VOCAB_SIZE     = 30522
+
+def beam_search(model, data, args, start_idx, batch_size, num_batches, k):
+    device = args['device']
+    max_summary_length = args['max_summary_length']
+    time_step = max_summary_length
+    idx = 0
+    summary_out_dir = args['summary_out_dir']
+
+
+    for bn in range(num_batches):
+        if (start_idx+idx+batch_size) > (TEST_DATA_SIZE-1): # last file = 11489
+            last_batch = True
+            summaries = [None for _ in range(TEST_DATA_SIZE - (start_idx+idx))]
+            batch_size = TEST_DATA_SIZE - (start_idx+idx)
+        else:
+            summaries = [None for _ in range(batch_size)]
+            last_batch = False
+
+        beams = [None for _ in range(k)]
+        beam_scores = np.zeros((batch_size, k))
+
+        batch = get_a_batch_abs(
+            data['encoded_articles'], data['attention_masks'],
+            data['token_type_ids_arr'], data['cls_pos_arr'],
+            data['target_pos'], args['max_num_sentences'],
+            None, None, None, idx+start_idx, batch_size,
+            last_batch, device, decoding=True)
+        # need to construct the input to the decoder
+        tgt_ids = torch.zeros((batch_size, max_summary_length), dtype=torch.int64).to(device)
+        for t in range(time_step-1):
+            # the first token is '[CLS]'
+            if t == 0:
+                tgt_ids[:,0] = START_TOKEN_ID
+                for i in range(k):
+                    beams[i] = tgt_ids
+
+            # tgt_key_padding_mask
+            row_padding_mask = [False]*(t+1) + [True]*(max_summary_length-t-1)
+            padding_mask     = [row_padding_mask for _ in range(batch_size)]
+            tgt_key_padding_mask = torch.tensor(padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
+
+            decoder_output_t_array = torch.zeros((batch_size, k*VOCAB_SIZE)) # output at a time step * beam_width
+
+            for i, beam in enumerate(beams):
+                batch['decoder'] = (beam, tgt_key_padding_mask, None)
+                # decoder_output => [batch_size, max_summary_length, vocab_size]
+                decoder_output = model(batch)
+                decoder_output_t_array[:,i*VOCAB_SIZE:(i+1)*VOCAB_SIZE] = decoder_output[:,t,:]
+                # add previous beam score bias
+                for n_idx in range(batch_size):
+                    decoder_output_t_array[n_idx,i*VOCAB_SIZE:(i+1)*VOCAB_SIZE] += beam_scores[n_idx,i]
+                if t == 0: break # only fill once for the first time step
+
+
+            # scores, indices => [batch_size, k]
+            scores, indices = torch.topk(decoder_output_t_array, k=k, dim=-1)
+            new_beams = [torch.zeros((batch_size, max_summary_length), dtype=torch.int64).to(device) for _ in range(k)]
+            for r_idx, row in enumerate(indices):
+                for c_idx, node in enumerate(row):
+                    vocab_idx = node % VOCAB_SIZE
+                    beam_idx  = int(node / VOCAB_SIZE)
+
+                    new_beams[c_idx][r_idx,:t+1] = beams[beam_idx][r_idx,:t+1]
+                    new_beams[c_idx][r_idx,t+1]  = vocab_idx
+
+
+            beam_scores = scores.cpu().numpy()
+            beams = new_beams
+
+        # finish t = 0,...,max_summary_length
+        for j in range(batch_size):
+            # summaries[j] = tgtids2summary(tgt_ids[j].cpu().numpy())
+            summaries[j] = tgtids2summary(beams[0][j].cpu().numpy())
+
+        write_summary_files(summary_out_dir, summaries, start_idx+idx)
+
+        print("[{}] batch {}/{} --- idx [{},{})".format(
+                str(datetime.now()), bn+1, num_batches,
+                start_idx+idx, start_idx+idx+batch_size))
+        sys.stdout.flush()
+        idx += batch_size
+
 def greedy_search(model, data, args, start_idx, batch_size, num_batches):
     # decode idx from [start_idx, end_idx)
     # model = trained PyTorch abstractive model
@@ -36,63 +121,44 @@ def greedy_search(model, data, args, start_idx, batch_size, num_batches):
     summary_out_dir = args['summary_out_dir']
 
     for bn in range(num_batches):
-        if (start_idx+idx+batch_size) > 11489: # last file = 11489
+        if (start_idx+idx+batch_size) > (TEST_DATA_SIZE-1): # last file = 11489
             last_batch = True
-            summaries = [None for _ in range(11490 - (start_idx+idx))]
-            batch_size = 11490 - (start_idx+idx)
+            summaries = [None for _ in range(TEST_DATA_SIZE - (start_idx+idx))]
+            batch_size = TEST_DATA_SIZE - (start_idx+idx)
         else:
             summaries = [None for _ in range(batch_size)]
             last_batch = False
-
         batch = get_a_batch_abs(
             data['encoded_articles'], data['attention_masks'],
             data['token_type_ids_arr'], data['cls_pos_arr'],
             data['target_pos'], args['max_num_sentences'],
             None, None, None, idx+start_idx, batch_size,
             last_batch, device, decoding=True)
-
         # need to construct the input to the decoder
         tgt_ids = torch.zeros((batch_size, max_summary_length), dtype=torch.int64).to(device)
-
         for t in range(time_step-1):
             # the first token is '[CLS]'
             if t == 0: tgt_ids[:,0] = START_TOKEN_ID
-
             # tgt_key_padding_mask
             row_padding_mask = [False]*(t+1) + [True]*(max_summary_length-t-1)
             padding_mask     = [row_padding_mask for _ in range(batch_size)]
             tgt_key_padding_mask = torch.tensor(padding_mask, dtype=KEYPADMASK_DTYPE).to(device)
 
             batch['decoder'] = (tgt_ids, tgt_key_padding_mask, None)
-
             # decoder_output => [batch_size, max_summary_length, vocab_size]
             decoder_output = model(batch)
-
             output_at_t = torch.argmax(decoder_output, dim=-1)[:,t]
             tgt_ids[:,t+1] = output_at_t
 
-        # print("================ sentence1 ===================")
-        # print(bert_tokenizer.decode(tgt_ids[0].cpu().numpy()))
-        # print("================ sentence2 ===================")
-        # print(bert_tokenizer.decode(tgt_ids[1].cpu().numpy()))
-        # print("================ sentence3 ===================")
-        # print(bert_tokenizer.decode(tgt_ids[2].cpu().numpy()))
         for j in range(batch_size):
             summaries[j] = tgtids2summary(tgt_ids[j].cpu().numpy())
-
         write_summary_files(summary_out_dir, summaries, start_idx+idx)
-
         print("[{}] batch {}/{} --- idx [{},{})".format(
                 str(datetime.now()), bn+1, num_batches,
                 start_idx+idx, start_idx+idx+batch_size))
-
         sys.stdout.flush()
-
         idx += batch_size
-
-
-
-    return summaries
+    return
 
 def write_summary_files(dir, summaries, start_idx):
     if not os.path.exists(dir): os.makedirs(dir)
@@ -125,14 +191,15 @@ def decode(start_idx):
     args['model_name'] = "ANOV19B"
     args['model_epoch'] = 0
     args['model_bn'] = 0
-    args['decoding_method'] = 'greedysearch'
+    args['decoding_method'] = 'beamsearch'
     # ---------------------------------------------------------------------------------- #
     args['summary_out_dir'] = \
-    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}/'.format(args['model_name'], args['model_epoch'], args['model_bn'])
+    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}-{}/' \
+    .format(args['model_name'], args['model_epoch'], args['model_bn'], args['decoding_method'])
     # ---------------------------------------------------------------------------------- #
     start_idx = start_idx
-    batch_size = 20
-    num_batches = 100
+    batch_size = 4
+    num_batches = 5
     # ---------------------------------------------------------------------------------- #
 
     use_gpu = True
@@ -168,8 +235,14 @@ def decode(start_idx):
 
     if args['decoding_method'] == 'greedysearch':
         with torch.no_grad():
-            summaries = greedy_search(abs_sum, test_data, args,
-                                    start_idx, batch_size, num_batches)
+            print("----------------- GREEDY SEARCH -----------------")
+            greedy_search(abs_sum, test_data, args, start_idx, batch_size, num_batches)
+    elif args['decoding_method'] == 'beamsearch':
+        with torch.no_grad():
+            print("------------------ BEAM SEARCH ------------------")
+            beam_width = 5
+            print("beam_width = {}".beam_width)
+            beam_search(abs_sum, test_data, args, start_idx, batch_size, num_batches, k=beam_width)
     else:
         raise RuntimeError('decoding method not supported')
 
