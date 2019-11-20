@@ -1,6 +1,7 @@
 import os
 import sys
 import torch
+import torch.nn as nn
 import torch.optim as optim
 import pdb
 import pickle
@@ -15,30 +16,31 @@ if   torch.__version__ == '1.1.0': KEYPADMASK_DTYPE = torch.uint8
 elif torch.__version__ == '1.2.0': KEYPADMASK_DTYPE = torch.bool
 else: raise Exception("Torch Version not supoorted")
 
+
 def train_abstractive_model():
     print("Start training abstractive model")
     # ---------------------------------------------------------------------------------- #
     args = {}
     args['max_pos_embed'] = 512
     args['max_num_sentences'] = 32
-    args['eval_nbatches'] = 2500
+    args['eval_nbatches'] = 5000
     args['update_nbatches'] = 5
     args['batch_size'] = 6
-    args['num_epochs'] = 5
+    args['num_epochs'] = 10
     args['val_batch_size'] = 100
-    args['val_stop_training'] = 20
-    args['random_seed'] = 28
-    args['lr_enc'] = 5e-6
+    args['val_stop_training'] = 10
+    args['random_seed'] = 78
+    args['lr_enc'] = 2e-5
     args['lr_dec'] = 2e-4
     args['adjust_lr'] = True
     # ---------------------------------------------------------------------------------- #
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "ANOV18A"
+    args['model_name'] = "ANOV20B"
     # load_model: None or specify path e.g. "/home/alta/summary/pm574/summariser0/lib/trained_models/best_NOV9.pt"
-    # args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/abssum-NOV13F-ep1-bn0.pt"
-    args['load_model'] = None
+    args['load_model'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/abssum-ANOV18C-ep4-bn45000.pt"
+    # args['load_model'] = None
     args['best_val_loss'] = 1e+10
     # ---------------------------------------------------------------------------------- #
     args['max_summary_length'] = 96
@@ -54,7 +56,7 @@ def train_abstractive_model():
         else:
             # pdb.set_trace()
             print('running locally...')
-            os.environ["CUDA_VISIBLE_DEVICES"] = '1' # choose the device (GPU) here
+            os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
         device = 'cuda'
     else:
         device = 'cpu'
@@ -75,6 +77,14 @@ def train_abstractive_model():
 
     abs_sum = AbstractiveSummariser(args, device=device)
     print(abs_sum)
+
+    # Load model if specified (path to pytorch .pt)
+    if args['load_model'] != None:
+        abs_sum.load_state_dict(torch.load(args['load_model']))
+        abs_sum.train()
+        print("Loaded model from {}".format(args['load_model']))
+    else:
+        print("Train a new model")
 
     # Hyperparameters
     BATCH_SIZE = args['batch_size']
@@ -147,6 +157,10 @@ def train_abstractive_model():
             idx += BATCH_SIZE
 
             if bn % args['update_nbatches'] == 0:
+                # gradient_clipping
+                max_norm = 1.0
+                nn.utils.clip_grad_norm_(abs_sum.parameters(), max_norm)
+                # update the gradients
                 optimizer_enc.step()
                 optimizer_dec.step()
                 optimizer_enc.zero_grad()
@@ -156,8 +170,7 @@ def train_abstractive_model():
                 print("[{}] batch number {}/{}: loss = {}".format(str(datetime.now()), bn, num_batches, loss))
                 sys.stdout.flush()
 
-
-            if bn % args['eval_nbatches'] == 0: # e.g. eval every 2000 batches
+            if bn % args['eval_nbatches'] == 0: # e.g. eval every 5000 batches
                 # ---------------- Evaluate the model on validation data ---------------- #
                 print("Evaluating the model at epoch {} step {}".format(epoch, bn))
                 print("learning_rate_encoder = {}".format(optimizer_enc.param_groups[0]['lr']))
@@ -180,16 +193,60 @@ def train_abstractive_model():
                     print("Model not improved #{}".format(stop_counter))
                     if stop_counter < VAL_STOP_TRAINING:
                         # load the previous model
-                        # latest_model = args['model_save_dir']+"abssum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch,best_bn)
-                        # abs_sum.load_state_dict(torch.load(latest_model))
-                        # abs_sum.train()
-                        # print("Restored model from {}".format(latest_model))
+                        latest_model = args['model_save_dir']+"abssum-{}-ep{}-bn{}.pt".format(args['model_name'],best_epoch,best_bn)
+                        abs_sum.load_state_dict(torch.load(latest_model))
+                        abs_sum.train()
+                        print("Restored model from {}".format(latest_model))
+                        # adjust_lr_not_improved(optimizer_enc, optimizer_dec, factor=0.5)
                         stop_counter += 1
+
                     else:
                         print("Model has not improved for {} times! Stop training.".format(VAL_STOP_TRAINING))
                         return
 
     print("End of training abstractive model")
+
+def evaluate_model(load_model):
+    args = {}
+    args['max_pos_embed'] = 512
+    args['max_num_sentences'] = 32
+    args['max_summary_length'] = 96
+    args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
+    val_batch_size = 200 # okay for K80 & RTX 2080 ti
+
+    if 'X_SGE_CUDA_DEVICE' in os.environ: # to run on CUED stack machine
+        print('running on the stack...')
+        cuda_device = os.environ['X_SGE_CUDA_DEVICE']
+        print('X_SGE_CUDA_DEVICE is set to {}'.format(cuda_device))
+        os.environ['CUDA_VISIBLE_DEVICES'] = cuda_device
+    else:
+        # pdb.set_trace()
+        print('running locally...')
+        os.environ["CUDA_VISIBLE_DEVICES"] = '0' # choose the device (GPU) here
+    device = 'cuda'
+
+    val_data      = load_data(args, 'val')
+    val_summary   = load_summary(args, 'val')
+
+    abs_sum = AbstractiveSummariser(args, device=device)
+    abs_sum.load_state_dict(torch.load(load_model))
+    abs_sum.eval() # switch to evaluation mode
+    print("evaluate model: {}".format(load_model))
+
+    vocab_size = abs_sum.decoder.linear_decoder.out_features
+
+    with torch.no_grad():
+        avg_val_loss = evaluate2(abs_sum, val_data, val_summary, val_batch_size, vocab_size, args, device)
+
+    print("============================================================================================")
+    print("MODEL = {}".format(load_model))
+    print("VLOSS = {}".format(avg_val_loss))
+    print("============================================================================================")
+
+def adjust_lr_not_improved(optimizer_enc, optimizer_dec, factor):
+    for param_group in optimizer_enc.param_groups: param_group['lr'] *= factor
+    for param_group in optimizer_dec.param_groups: param_group['lr'] *= factor
+    return
 
 def adjust_lr2(optimizer_enc, optimizer_dec, epoch, epoch_size, bn, warmup_enc, warmup_dec):
     """to adjust the learning rate for both encoder & decoder"""
@@ -246,8 +303,9 @@ def evaluate2(model, eval_data, eval_summary, eval_batch_size, vocab_size, args,
                 last_batch, device)
 
         # decoder target
-        decoder_target = batch['decoder'][0].view(-1)
-        decoder_mask   = batch['decoder'][-1].view(-1)
+        decoder_target, decoder_mask = shift_decoder_target(batch['decoder'])
+        decoder_target = decoder_target.view(-1)
+        decoder_mask   = decoder_mask.view(-1)
 
         # forward + backward
         decoder_output = model(batch)
@@ -396,4 +454,13 @@ class LabelSmoothingLoss(nn.Module):
             raise RuntimeError("reduction mode not supported")
 
 if __name__ == "__main__":
-    train_abstractive_model()
+    if len(sys.argv) == 3:
+        # ----- EVALUATION ----- #
+        if sys.argv[1] == 'eval':
+            path_to_model = sys.argv[2]
+            evaluate_model(path_to_model)
+        else:
+            raise Exception("do you want to do evaluation?")
+    elif len(sys.argv) == 1:
+        # ------ TRAINING ------ #
+        train_abstractive_model()
