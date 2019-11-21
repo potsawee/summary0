@@ -119,6 +119,87 @@ class AbstractiveSummariser(nn.Module):
                                   logsoftmax=self.is_training)
         return dec_output
 
+    def decode_beamsearch(self, enc_inputs, memory_key_padding_mask, decode_dict):
+        """
+        this method is meant to be used at inference time
+            encoder_inputs          = input_dict into the encoder
+            memory_key_padding_mask = mask for the output of the encoder
+            decode_dict:
+                - k                = beamwidth for beamsearch
+                - batch_size       = batch_size
+                - time_step        = max_summary_length
+                - vocab_size       = 30522 for BERT
+                - device           = cpu or cuda
+                - start_token_id   = ID of the start token
+                - keypadmask_dtype = torch.bool
+        """
+        k                = decode_dict['k']
+        batch_size       = decode_dict['batch_size']
+        time_step        = decode_dict['time_step']
+        vocab_size       = decode_dict['vocab_size']
+        device           = decode_dict['device']
+        start_token_id   = decode_dict['start_token_id']
+        keypadmask_dtype = decode_dict['keypadmask_dtype']
+
+        # create beam array & scores
+        beams = [None for _ in range(k)]
+        beam_scores = np.zeros((batch_size, k))
+
+        # we should only feed through the encoder just once!!
+        enc_output = self.encoder(enc_inputs) # memory
+
+        # we run the decoder time_step times (auto-regressive)
+        tgt_ids = torch.zeros((batch_size, time_step), dtype=torch.int64).to(device)
+        tgt_ids[:,0] = start_token_id
+        for i in range(k):
+            beams[i] = tgt_ids
+
+        for t in range(time_step-1):
+            # tgt_key_padding_mask
+            row_padding_mask = [False]*(t+1) + [True]*(time_step-t-1)
+            padding_mask     = [row_padding_mask for _ in range(batch_size)]
+            tgt_key_padding_mask = torch.tensor(padding_mask, dtype=keypadmask_dtype).to(device)
+
+            decoder_output_t_array = torch.zeros((batch_size, k*vocab_size))
+
+            for i, beam in enumerate(beams):
+                decoder_output = self.decoder(beam, enc_output,
+                                          tgt_mask=self.tgt_mask,
+                                          tgt_key_padding_mask=tgt_key_padding_mask,
+                                          memory_key_padding_mask=memory_key_padding_mask,
+                                          logsoftmax=False)
+
+                decoder_output_t_array[:,i*vocab_size:(i+1)*vocab_size] = decoder_output[:,t,:]
+                # add previous beam score bias
+                for n_idx in range(batch_size):
+                    decoder_output_t_array[n_idx,i*vocab_size:(i+1)*vocab_size] += beam_scores[n_idx,i]
+                if t == 0: break # only fill once for the first time step
+
+            # scores, indice => (batch_size, k)
+            scores, indices = torch.topk(decoder_output_t_array, k=k, dim=-1)
+            new_beams = [torch.zeros((batch_size, time_step), dtype=torch.int64).to(device) for _ in range(k)]
+            for r_idx, row in enumerate(indices):
+                for c_idx, node in enumerate(row):
+                    vocab_idx = node % vocab_size
+                    beam_idx  = int(node / vocab_size)
+
+                    new_beams[c_idx][r_idx,:t+1] = beams[beam_idx][r_idx,:t+1]
+                    new_beams[c_idx][r_idx,t+1]  = vocab_idx
+
+            beam_scores = scores.cpu().numpy()
+            beams = new_beams
+
+        #     if (t % 10) == 0:
+        #         print("{}=".format(t), end="")
+        #         sys.stdout.flush()
+        # print("{}=#".format(t))
+
+        summaries_id = [None for _ in range(batch_size)]
+        for j in range(batch_size): summaries_id[j] = beams[0][j].cpu().numpy()
+
+        return summaries_id
+
+
     def _create_tgt_mask(self, tgt_max_length, device):
         # tgt_mask to ensure future information is used
         tgt_mask_shape = (tgt_max_length, tgt_max_length)
