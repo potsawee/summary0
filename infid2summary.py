@@ -87,16 +87,27 @@ def write_summary_files(dir, summaries):
     return
 
 def main():
-    model = 'NOV13Fc'
-    epoch = 0
-    bn = 4000
+    ensemble = True
+    if not ensemble:
+        model = 'NOV15C'
+        epoch = 1
+        bn = 26000
 
-    test_data_path = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
-    inf_path = '/home/alta/summary/pm574/summariser0/out_inference/extractive/model-{}-ep{}-bn{}.top10.txt'.format(model, epoch, bn)
-    summary_out_dir = '/home/alta/summary/pm574/summariser0/out_summary/extractive/model-{}-ep{}-bn{}-tg/'.format(model, epoch, bn)
-    output = read_inference_output(inf_path)
-    summaries = generate_summary(test_data_path, output, top_k=3, trigram_blocking=True)
-    write_summary_files(summary_out_dir, summaries)
+        test_data_path = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
+        inf_path = '/home/alta/summary/pm574/summariser0/out_inference/extractive/model-{}-ep{}-bn{}.top10.txt'.format(model, epoch, bn)
+        summary_out_dir = '/home/alta/summary/pm574/summariser0/out_summary/extractive/model-{}-ep{}-bn{}-tg/'.format(model, epoch, bn)
+        output = read_inference_output(inf_path)
+        summaries = generate_summary(test_data_path, output, top_k=3, trigram_blocking=True)
+        write_summary_files(summary_out_dir, summaries)
+
+    else:
+        ensemble_name = "ensemble-NOV13Fc-NOV13G-NOV15B-NOV15C.avg"
+        test_data_path = '/home/alta/summary/pm574/data/cnn_dm/finished_files_pm574/test.pk.bin'
+        inf_path = '/home/alta/summary/pm574/summariser0/out_inference/extractive/{}.top10.txt'.format(ensemble_name)
+        summary_out_dir = '/home/alta/summary/pm574/summariser0/out_summary/extractive/{}-tg/'.format(ensemble_name)
+        output = read_inference_output(inf_path)
+        summaries = generate_summary(test_data_path, output, top_k=3, trigram_blocking=True)
+        write_summary_files(summary_out_dir, summaries)
 
 if __name__ == "__main__":
     main()
