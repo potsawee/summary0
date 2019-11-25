@@ -1,3 +1,4 @@
+# import sys
 import torch
 import torch.nn as nn
 import numpy as np
@@ -75,8 +76,6 @@ class AbstractiveSummariser(nn.Module):
         super(AbstractiveSummariser, self).__init__()
         self.args = args
         self.device = device
-        self.is_training = True
-
         self.encoder = AbsEncoder(finetune=True)
 
         hidden_size = self.encoder.bert.model.config.hidden_size # 768
@@ -115,8 +114,7 @@ class AbstractiveSummariser(nn.Module):
         dec_output = self.decoder(tgt_ids, enc_output,
                                   tgt_mask=self.tgt_mask,
                                   tgt_key_padding_mask=tgt_key_padding_mask,
-                                  memory_key_padding_mask=memory_key_padding_mask,
-                                  logsoftmax=self.is_training)
+                                  memory_key_padding_mask=memory_key_padding_mask)
         return dec_output
 
     def decode_beamsearch(self, enc_inputs, memory_key_padding_mask, decode_dict):
@@ -131,6 +129,7 @@ class AbstractiveSummariser(nn.Module):
                 - vocab_size       = 30522 for BERT
                 - device           = cpu or cuda
                 - start_token_id   = ID of the start token
+                - stop_token_id    = ID of the stop token
                 - keypadmask_dtype = torch.bool
         """
         k                = decode_dict['k']
@@ -139,10 +138,13 @@ class AbstractiveSummariser(nn.Module):
         vocab_size       = decode_dict['vocab_size']
         device           = decode_dict['device']
         start_token_id   = decode_dict['start_token_id']
+        stop_token_id    = decode_dict['stop_token_id']
+        alpha            = decode_dict['alpha']
+        length_offset    = decode_dict['length_offset']
         keypadmask_dtype = decode_dict['keypadmask_dtype']
 
         # create beam array & scores
-        beams = [None for _ in range(k)]
+        beams       = [None for _ in range(k)]
         beam_scores = np.zeros((batch_size, k))
 
         # we should only feed through the encoder just once!!
@@ -169,10 +171,24 @@ class AbstractiveSummariser(nn.Module):
                                           memory_key_padding_mask=memory_key_padding_mask,
                                           logsoftmax=False)
 
-                decoder_output_t_array[:,i*vocab_size:(i+1)*vocab_size] = decoder_output[:,t,:]
+                # check if there is STOP_TOKEN emitted in the previous time step already
+                # i.e. if the input at this time step is STOP_TOKEN
+                for n_idx in range(batch_size):
+                    if beam[n_idx][t] == stop_token_id: # already stop
+                        decoder_output[n_idx, t, :] = float('-inf')
+                        decoder_output[n_idx, t, stop_token_id] = 0.0 # to ensure STOP_TOKEN will be picked again!
+
+                    else: # need to update scores --- length norm
+                        beam_scores[n_idx,i] *= (t-1+length_offset)**alpha
+                        beam_scores[n_idx,i] /= (t+length_offset)**alpha
+
+                # length_norm = 1/(length)^alpha ... alpha = 0.7
+                decoder_output_t_array[:,i*vocab_size:(i+1)*vocab_size] = decoder_output[:,t,:]/(t+length_offset)**alpha
+
                 # add previous beam score bias
                 for n_idx in range(batch_size):
                     decoder_output_t_array[n_idx,i*vocab_size:(i+1)*vocab_size] += beam_scores[n_idx,i]
+
                 if t == 0: break # only fill once for the first time step
 
             # scores, indice => (batch_size, k)

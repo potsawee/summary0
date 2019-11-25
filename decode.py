@@ -29,16 +29,21 @@ STOP_TOKEN_ID  = bert_tokenizer.convert_tokens_to_ids(STOP_TOKEN)
 TEST_DATA_SIZE = 11490
 VOCAB_SIZE     = 30522
 
-def beam_search_v2(model, data, args, start_idx, batch_size, num_batches, k):
+def beam_search_v2(model, data, args, start_idx, batch_size, num_batches, k, alpha):
     device = args['device']
     max_summary_length = args['max_summary_length']
     time_step = max_summary_length
     idx = 0
     summary_out_dir = args['summary_out_dir']
 
+    alpha = alpha
+    length_offset = 5
+
     decode_dict = {
         'k': k, 'time_step': time_step, 'vocab_size': VOCAB_SIZE,
         'device': device, 'start_token_id': START_TOKEN_ID,
+        'stop_token_id': STOP_TOKEN_ID,
+        'alpha': alpha, 'length_offset': length_offset,
         'keypadmask_dtype': KEYPADMASK_DTYPE
     }
 
@@ -241,19 +246,20 @@ def decode(start_idx):
     args['use_gpu'] = True
     args['model_save_dir'] = "/home/alta/summary/pm574/summariser0/lib/trained_models/"
     args['model_data_dir'] = "/home/alta/summary/pm574/summariser0/lib/model_data/"
-    args['model_name'] = "ANOV20A"
-    args['model_epoch'] = 3
-    args['model_bn'] = 15000
+    args['model_name'] = "ANOV21A"
+    args['model_epoch'] = 9
+    args['model_bn'] = 40000
     args['decoding_method'] = 'beamsearch'
     # ---------------------------------------------------------------------------------- #
-    start_idx = start_idx
-    batch_size = 1
+    start_idx   = start_idx
+    batch_size  = 1
     num_batches = 10
-    beam_width = 5
+    beam_width  = 5
+    alpha       = 0.7
     # ---------------------------------------------------------------------------------- #
     args['summary_out_dir'] = \
-    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}-{}{}/' \
-    .format(args['model_name'], args['model_epoch'], args['model_bn'], args['decoding_method'], beam_width)
+    '/home/alta/summary/pm574/summariser0/out_summary/abstractive/model-{}-ep{}-bn{}-{}{}-alpha{}/' \
+    .format(args['model_name'], args['model_epoch'], args['model_bn'], args['decoding_method'], beam_width, alpha)
     # ---------------------------------------------------------------------------------- #
 
     use_gpu = False
@@ -282,7 +288,6 @@ def decode(start_idx):
         abs_sum.load_state_dict(torch.load(trained_model, map_location=torch.device('cpu')))
 
     abs_sum.eval() # switch it to eval mode
-    abs_sum.is_training = False
     print("Restored model from {}".format(trained_model))
 
     # Load and prepare data
@@ -299,7 +304,7 @@ def decode(start_idx):
         with torch.no_grad():
             print("------------------ BEAM SEARCH ------------------")
             print("beam_width = {}".format(beam_width))
-            beam_search_v2(abs_sum, test_data, args, start_idx, batch_size, num_batches, k=beam_width)
+            beam_search_v2(abs_sum, test_data, args, start_idx, batch_size, num_batches, k=beam_width, alpha=alpha)
     else:
         raise RuntimeError('decoding method not supported')
 
