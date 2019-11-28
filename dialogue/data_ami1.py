@@ -3,6 +3,14 @@ CLS_TOKEN  = "[CLS]"
 SEP_TOKEN  = "[SEP]"
 MASK_TOKEN = "[MASK]"
 
+DA_STR2ID = {'assess': 0, 'stall': 1, 'suggest': 2, 'inform': 3,
+         'offer': 4, 'other': 5, 'fragment': 6, 'backchannel': 7,
+         'be-positive': 8, 'elicit-inform': 9, 'elicit-assessment': 10,
+         'elicit-offer-or-suggestion': 11, 'comment-about-understanding': 12,
+         'be-negative': 13, 'elicit-comment-understanding': 14}
+
+DA_ID2STR = dict((v,k) for k,v in DA_STR2ID.items())
+
 from transformers import BertTokenizer
 bert_tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
 
@@ -76,10 +84,17 @@ def load_data(data_type, max_sent_length, max_summary_length):
         length = len(tokenized_sum)
         processed_summaries[idx] = ProcessedSummary(encoded_sum, length)
 
-    return {'in': processed_documents, 'sum': processed_summaries}
+    # --------------------------------- Dialogue Acts --------------------------------- #
+    dialogueacts = [None] * num_data
+    for idx in range(num_data):
+        acts = data_dict['da'][idx].split()
+        dialogueacts[idx] = [DA_STR2ID[act] for act in acts]
+
+
+    return {'in': processed_documents, 'sum': processed_summaries, 'da': dialogueacts}
 
 def read_data(data_dir):
-    # dialog act
+    # dialogue act
     da = data_dir + 'da'
     with open(da, 'r') as f:
         dialog_acts = f.readlines()
